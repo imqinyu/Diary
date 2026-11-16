@@ -6,6 +6,7 @@ struct SettingsView: View {
         case general
         case statistics
         case backup
+        case sync
     }
 
     @State private var selection: Tab = .general
@@ -29,6 +30,10 @@ struct SettingsView: View {
             settingsPage(.backup) { BackupSettingsView() }
                 .tabItem { Label("备份", systemImage: "externaldrive.badge.timemachine") }
                 .tag(Tab.backup)
+
+            settingsPage(.sync) { SyncSettingsView() }
+                .tabItem { Label("同步", systemImage: "icloud") }
+                .tag(Tab.sync)
         }
         .frame(width: 560)
         .background(Color(nsColor: .windowBackgroundColor))
@@ -428,7 +433,7 @@ private struct PrivacySettingsSection: View {
                     Label("锁定后，这些条目在列表、筛选、相册里全都不会出现。", systemImage: "eye.slash")
                     Label("解锁：在搜索框直接输入密码并回车，内容会静默出现。", systemImage: "magnifyingglass")
                     Label("切到别的应用时自动重新上锁。", systemImage: "rectangle.on.rectangle.slash")
-                    Text("当前版本只做界面隐藏：私密条目的正文在磁盘上仍是明文 Markdown，用文本编辑器仍能直接看到。真正的加密留到以后。")
+                    Text("隐私正文在磁盘上加密，图片和日期等元数据保持原样。跨设备阅读时，请在另一台设备设置相同的隐私密码。")
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -496,7 +501,10 @@ private struct PrivacySettingsSection: View {
             message = "两次输入不一致"
             return
         }
+        store.flushEditorsForSync()
         if privacy.setPassword(setupPassword) {
+            store.reloadFromSync()
+            store.encryptPlaintextPrivateEntries()
             setupPassword = ""
             setupConfirm = ""
             message = "已设置"
@@ -510,9 +518,11 @@ private struct PrivacySettingsSection: View {
             message = "两次输入不一致"
             return
         }
+        store.flushEditorsForSync()
         if privacy.changePassword(current: currentPassword, new: newPassword) {
             // 密钥换了，私密条目要整体重加密一遍
             store.reencryptPrivateEntries()
+            store.reloadFromSync()
             currentPassword = ""
             newPassword = ""
             newConfirm = ""

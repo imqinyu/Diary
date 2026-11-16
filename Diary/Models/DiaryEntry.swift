@@ -72,10 +72,12 @@ struct DiaryEntry: Identifiable, Hashable {
     var isEncrypted: Bool = false
     /// 显式补写标记，旧文件在读取时根据补写期和编辑日期补推。
     var isBackfilled: Bool = false
+    var encryptionSalt: String? = nil
+    var isContentAvailable = true
 
     /// 普通条目只有当天可写；插入的旧日记在半天的补写期内可写，过期自动只读。
     func canEdit(at date: Date) -> Bool {
-        guard !isDeleted else { return false }
+        guard !isDeleted, isContentAvailable else { return false }
         if let editableUntil {
             return date < editableUntil
         }
@@ -120,7 +122,8 @@ struct DiaryEntry: Identifiable, Hashable {
 // MARK: - 与文件互相转换
 
 extension DiaryEntry {
-    init?(document: EntryDocument, fileURL: URL, key: SymmetricKey? = nil) {
+    init?(document: EntryDocument, fileURL: URL, key: SymmetricKey? = nil,
+          keyResolver: ((String?) -> SymmetricKey?)? = nil) {
         let fm = document.frontMatter
         let stem = fileURL.deletingPathExtension().lastPathComponent
         let parsedName = EntryFileName.parse(stem)
@@ -148,6 +151,7 @@ extension DiaryEntry {
         self.fileURL = fileURL
         self.editableUntil = ISO8601.date(fm.string("editable_until"))
         self.isEncrypted = fm.bool("encrypted") ?? false
+        self.encryptionSalt = fm.string("encryption_salt")
         // 删除也会更新 updated；这个时间不能把原本正常写的日记变成补写。
         let writingDate = isDeleted && deletedAt != nil ? created : updated
         let editedLater = DayKey.date(from: dayKey).map {
@@ -162,10 +166,12 @@ extension DiaryEntry {
         // 加密条目在锁定状态下读不出来，正文留空；元数据仍然可用。
         var plainBody = document.body
         if isEncrypted {
-            if let key, let opened = PrivacyCrypto.open(document.body, key: key) {
+            let effectiveKey = keyResolver?(fm.string("encryption_salt")) ?? key
+            if let effectiveKey, let opened = PrivacyCrypto.open(document.body, key: effectiveKey) {
                 plainBody = opened
             } else {
                 plainBody = ""
+                self.isContentAvailable = false
             }
         }
         self.bodyMarkdown = plainBody
@@ -218,7 +224,7 @@ extension DiaryEntry {
 
     /// 生成写盘用的 front matter，键顺序固定，方便人读和 diff。
     /// 私密条目在拿到密钥时把正文加密；没有密钥说明当前是锁定态，不该走到这里。
-    func makeDocument(encryptionKey: SymmetricKey? = nil) -> EntryDocument {
+    func makeDocument(encryptionKey: SymmetricKey? = nil, encryptionSalt: String? = nil) -> EntryDocument {
         var fm = FrontMatter()
         fm.set("schema", .scalar("1"))
         fm.set("id", .scalar(id))
@@ -260,6 +266,7 @@ extension DiaryEntry {
 
         let shouldEncrypt = isPrivate && !isDeleted && encryptionKey != nil
         fm.set("encrypted", .scalar(shouldEncrypt ? "true" : "false"))
+        fm.set("encryption_salt", shouldEncrypt ? (encryptionSalt ?? self.encryptionSalt).map { .scalar($0) } : nil)
 
         let body: String
         if isDeleted {

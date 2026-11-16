@@ -150,6 +150,7 @@ final class BackupManager {
         let folderURL = access.url
 
         let source = store.dataRoot
+        store.flushEditorsForSync()
         let destination = folderURL.appendingPathComponent("Diary-\(Self.stamp()).zip")
 
         do {
@@ -177,6 +178,7 @@ final class BackupManager {
         guard !isBusy else { return }
         isBusy = true
         defer { isBusy = false }
+        store.flushEditorsForSync()
         do {
             try await makeArchive(from: store.dataRoot, to: destination)
             infoMessage = "已导出到 \(destination.lastPathComponent)"
@@ -226,6 +228,7 @@ final class BackupManager {
 
             // 先留一份现状，万一恢复的内容不对还能回去
             let folderURL = access.url
+            store.flushEditorsForSync()
             let safety = folderURL.appendingPathComponent("Diary-替换前-\(Self.stamp()).zip")
             try await makeArchive(from: store.dataRoot, to: safety)
             lastBackupDate = Date()
@@ -245,7 +248,7 @@ final class BackupManager {
                 }
                 throw error
             }
-            store.reload()
+            store.reloadFromSync()
 
             if store.entries.isEmpty && !Self.containsEntries(at: old) {
                 // 备份里本来就是空的，没什么可回滚的
@@ -253,7 +256,7 @@ final class BackupManager {
             } else if store.entries.isEmpty {
                 try? fileManager.removeItem(at: current)
                 try? fileManager.moveItem(at: old, to: current)
-                store.reload()
+                store.reloadFromSync()
                 throw BackupError.invalidArchive
             } else {
                 infoMessage = "已恢复 \(store.entries.count) 条日记"

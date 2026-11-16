@@ -509,7 +509,8 @@ struct FilterSidebar: View {
     }
 
     private func count(for time: TimeFilter) -> Int {
-        entries(excluding: .time).filter { time.matches(dayKey: $0.dayKey) }.count
+        if time == .all { return store.visibleEntries.count }
+        return entries(excluding: .time).filter { time.matches(dayKey: $0.dayKey) }.count
     }
 
     private func count(for attachment: AttachmentFilter) -> Int {

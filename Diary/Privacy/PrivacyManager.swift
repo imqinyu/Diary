@@ -3,9 +3,7 @@ import Foundation
 import Observation
 import Security
 
-/// 隐私保护。注意：这一版只是「界面隐藏」——
-/// 私密条目的正文在磁盘上仍是明文 Markdown，锁的是界面而不是数据。
-/// 密码本身只存「盐 + 哈希」，不存明文。
+/// 隐私正文加密；密码只在解锁期间驻留内存，磁盘保存盐与验证记录。
 @MainActor
 @Observable
 final class PrivacyManager {
@@ -29,6 +27,8 @@ final class PrivacyManager {
     }
 
     private let defaults: UserDefaults
+    @ObservationIgnored private var unlockedPassword: String?
+    @ObservationIgnored private var derivedKeys: [String: SymmetricKey] = [:]
     private static let storageKey = "PrivacyPasswordRecord"
     private static let biometricsKey = "PrivacyUseBiometrics"
 
@@ -62,6 +62,8 @@ final class PrivacyManager {
         hasPassword = true
         isUnlocked = true
         encryptionKey = PrivacyCrypto.key(from: password, salt: salt)
+        unlockedPassword = password
+        derivedKeys.removeAll()
         errorMessage = nil
         return true
     }
@@ -85,6 +87,8 @@ final class PrivacyManager {
         hasPassword = false
         isUnlocked = false
         encryptionKey = nil
+        unlockedPassword = nil
+        derivedKeys.removeAll()
         errorMessage = nil
         return true
     }
@@ -131,6 +135,8 @@ final class PrivacyManager {
     /// 验证通过后统一在这里落地状态和密钥。
     private func unlock(with password: String) {
         isUnlocked = true
+        unlockedPassword = password
+        derivedKeys.removeAll()
         if let salt = storedSalt {
             encryptionKey = PrivacyCrypto.key(from: password, salt: salt)
         }
@@ -139,6 +145,21 @@ final class PrivacyManager {
     func lock() {
         isUnlocked = false
         encryptionKey = nil
+        unlockedPassword = nil
+        derivedKeys.removeAll()
+    }
+
+    /// 盐不是密钥，可以随加密正文保存；不同设备用同一密码派生对应密钥。
+    var encryptionSalt: String? { storedSalt }
+
+    func encryptionKey(for salt: String?) -> SymmetricKey? {
+        guard let salt else { return encryptionKey }
+        guard let password = unlockedPassword, isUnlocked else { return nil }
+        if salt == storedSalt { return encryptionKey }
+        if let key = derivedKeys[salt] { return key }
+        guard salt.count == 32, let key = PrivacyCrypto.key(from: password, salt: salt) else { return nil }
+        derivedKeys[salt] = key
+        return key
     }
 
     /// 当前密码记录里的盐，用来派生密钥。

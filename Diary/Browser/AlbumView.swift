@@ -42,6 +42,7 @@ struct AlbumView: View {
                                     LazyVGrid(columns: columns, spacing: spacing) {
                                         ForEach(section.photos) { photo in
                                             PhotoCell(photo: photo)
+                                                .id(photo.id + ":" + String(store.externalReloadGeneration))
                                                 .onTapGesture { preview = photo }
                                         }
                                     }
@@ -65,6 +66,7 @@ struct AlbumView: View {
         .task { refresh() }
         .onChange(of: filter) { _, _ in refresh() }
         .onChange(of: store.entries) { _, _ in refresh() }
+        .onChange(of: store.externalReloadGeneration) { _, _ in refresh() }
         .onChange(of: privacy.isUnlocked) { _, _ in refresh() }
         .sheet(item: $preview) { photo in
             PhotoPreviewSheet(photo: photo)

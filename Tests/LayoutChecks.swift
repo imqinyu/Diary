@@ -9,7 +9,8 @@ struct LayoutChecks {
         _ = NSApplication.shared
         let output = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
         try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
-        let dataRoot = output.appendingPathComponent("layout-data", isDirectory: true)
+        let dataRoot = output.appendingPathComponent("layout-data-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dataRoot) }
         let backupRoot = output.appendingPathComponent("layout-backups", isDirectory: true)
         try FileManager.default.createDirectory(at: backupRoot, withIntermediateDirectories: true)
         let defaults = UserDefaults.standard
@@ -29,15 +30,17 @@ struct LayoutChecks {
         preferences.themeColor = .purple
         let backup = BackupManager()
         let location = LocationService()
+        let sync = SyncManager(defaults: isolatedDefaults, directory: output.appendingPathComponent("sync"), loadCredentials: false)
 
         var heights: [SettingsView.Tab: CGFloat] = [:]
-        for (tab, name) in [(SettingsView.Tab.general, "general"), (.statistics, "statistics"), (.backup, "backup")] {
+        for (tab, name) in [(SettingsView.Tab.general, "general"), (.statistics, "statistics"), (.backup, "backup"), (.sync, "sync")] {
             let root = SettingsView(initialTab: tab)
                 .environment(store)
                 .environment(privacy)
                 .environment(preferences)
                 .environment(backup)
                 .environment(location)
+                .environment(sync)
                 .accentColor(preferences.themeColor.color)
                 .tint(preferences.themeColor.color)
             let hosting = NSHostingView(rootView: root)
@@ -58,7 +61,7 @@ struct LayoutChecks {
             print("\(name): \(Int(size.width)) × \(Int(size.height))")
             if tab == .general {
                 let tabs = findTabView(in: hosting)!
-                precondition(tabs.tabViewItems.count == 3)
+                precondition(tabs.tabViewItems.count == 4)
                 let top = window.frame.maxY
                 tabs.selectTabViewItem(at: 2)
                 settle(hosting)

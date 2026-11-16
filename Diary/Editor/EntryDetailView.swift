@@ -22,9 +22,11 @@ struct EntryDetailView: View {
     @State private var now = Date()
 
     private let initialAttributedText: NSAttributedString
+    private let reloadGeneration: Int
 
-    init(entry: DiaryEntry) {
+    init(entry: DiaryEntry, reloadGeneration: Int = 0) {
         self.entry = entry
+        self.reloadGeneration = reloadGeneration
         _latestMarkdown = State(initialValue: entry.bodyMarkdown)
         _titleDraft = State(initialValue: entry.title)
         initialAttributedText = MarkdownCodec.decode(
@@ -45,6 +47,11 @@ struct EntryDetailView: View {
         VStack(spacing: 0) {
             header
             Divider()
+            if !current.isContentAvailable {
+                ContentUnavailableView("正文已加密", systemImage: "lock.doc",
+                    description: Text("在设置中设置这篇日记使用的隐私密码，再通过搜索框解锁。"))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
             RichTextEditor(
                 initialText: initialAttributedText,
                 isEditable: writable,
@@ -57,6 +64,7 @@ struct EntryDetailView: View {
                 onChange: handleChange
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if writable {
@@ -109,6 +117,10 @@ struct EntryDetailView: View {
             consumeAutoFill()
         }
         .onDisappear {
+            flush()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: DiaryStore.flushEditorsNotification)) { notification in
+            guard notification.object as? DiaryStore === store else { return }
             flush()
         }
     }
@@ -391,6 +403,7 @@ struct EntryDetailView: View {
         saveTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 600_000_000)
             guard !Task.isCancelled else { return }
+            guard store.externalReloadGeneration == reloadGeneration else { return }
             store.saveBody(entryID: entry.id, markdown: markdown)
         }
     }
@@ -398,6 +411,7 @@ struct EntryDetailView: View {
     private func flush() {
         saveTask?.cancel()
         saveTask = nil
+        guard store.externalReloadGeneration == reloadGeneration else { return }
         store.saveBody(entryID: entry.id, markdown: latestMarkdown)
     }
 

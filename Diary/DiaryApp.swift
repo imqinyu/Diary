@@ -7,6 +7,7 @@ struct DiaryApp: App {
     @State private var backup = BackupManager()
     @State private var preferences = AppPreferences()
     @State private var locationService = LocationService()
+    @State private var sync = SyncManager()
 
     init() {
         let privacy = PrivacyManager()
@@ -24,6 +25,11 @@ struct DiaryApp: App {
                 .environment(backup)
                 .environment(preferences)
                 .environment(locationService)
+                .environment(sync)
+                .onAppear { sync.start(store: store) }
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+                    if sync.automaticSync { Task { await sync.syncNow(store: store) } }
+                }
                 .frame(minWidth: 860, minHeight: 560)
         }
         .defaultSize(width: 1040, height: 700)
@@ -57,6 +63,7 @@ struct DiaryApp: App {
                 .environment(backup)
                 .environment(preferences)
                 .environment(locationService)
+                .environment(sync)
         }
         .defaultSize(width: 560, height: 600)
         .windowResizability(.automatic)

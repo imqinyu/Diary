@@ -178,8 +178,8 @@ struct BrowserView: View {
     @ViewBuilder
     private var detail: some View {
         if let id = selection, let entry = store.entry(with: id) {
-            EntryDetailView(entry: entry)
-                .id(entry.id)
+            EntryDetailView(entry: entry, reloadGeneration: store.externalReloadGeneration)
+                .id(entry.id + ":sync:" + String(store.externalReloadGeneration))
         } else {
             ContentUnavailableView(
                 "选择一页",

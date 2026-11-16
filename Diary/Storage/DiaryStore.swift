@@ -20,6 +20,19 @@ final class DiaryStore {
     var focusEntryID: String?
     /// 新建后等待自动填位置和天气的条目（由浏览页在开关打开时设置）。
     var pendingAutoFillID: String?
+    private(set) var externalReloadGeneration = 0
+    @ObservationIgnored var onDiskChange: (() -> Void)?
+    static let flushEditorsNotification = Notification.Name("DiaryFlushEditorsForSync")
+
+    func flushEditorsForSync() {
+        NotificationCenter.default.post(name: Self.flushEditorsNotification, object: self)
+    }
+
+    func reloadFromSync() {
+        externalReloadGeneration += 1
+        ThumbnailCache.shared.clear()
+        reload()
+    }
 
     private static let rootDefaultsKey = "DiaryDataRootPath"
     private let privacy: PrivacyManager
@@ -55,10 +68,12 @@ final class DiaryStore {
     }
 
     func changeRoot(to url: URL) {
+        flushEditorsForSync()
         dataRoot = url
         UserDefaults.standard.set(url.path, forKey: Self.rootDefaultsKey)
         prepareDirectories()
-        reload()
+        reloadFromSync()
+        onDiskChange?()
     }
 
     func revealInFinder() {
@@ -89,7 +104,7 @@ final class DiaryStore {
                     errorMessage = "整理日记目录失败，原文件已保留：\(error.localizedDescription)"
                     location = url
                 }
-                if let entry = Self.loadEntry(at: location, key: key) {
+                if let entry = loadEntry(at: location, key: key) {
                     loaded.append(entry)
                 }
             }
@@ -102,9 +117,10 @@ final class DiaryStore {
         entries = loaded
     }
 
-    private static func loadEntry(at url: URL, key: SymmetricKey?) -> DiaryEntry? {
+    private func loadEntry(at url: URL, key: SymmetricKey?) -> DiaryEntry? {
         guard let document = try? EntryDocument.read(from: url) else { return nil }
-        return DiaryEntry(document: document, fileURL: url, key: key)
+        return DiaryEntry(document: document, fileURL: url, key: key,
+                          keyResolver: { self.privacy.encryptionKey(for: $0) })
     }
 
     func entry(with id: String) -> DiaryEntry? {
@@ -215,6 +231,7 @@ final class DiaryStore {
         }
 
         reload()
+        onDiskChange?()
         if editWindow == nil {
             lastCreatedID = newEntry.id
         } else {
@@ -300,13 +317,7 @@ final class DiaryStore {
             var entry = entries[index]
             entry.tags.removeAll { $0 == tag }
             entry.updated = Date()
-            do {
-                try entry.makeDocument().write(to: entry.fileURL)
-                entries[index] = entry
-                changed += 1
-            } catch {
-                errorMessage = "保存失败：\(error.localizedDescription)"
-            }
+            if persist(entry, at: index) { changed += 1 }
         }
         return changed
     }
@@ -339,6 +350,10 @@ final class DiaryStore {
         guard let index = entries.firstIndex(where: { $0.id == entryID }) else { return false }
         let entry = entries[index]
         guard !entry.isDeleted else { return false }
+        guard entry.isContentAvailable else {
+            errorMessage = "请先解锁这篇加密日记后再删除"
+            return false
+        }
 
         if entry.isWritable {
             return eraseCompletely(entry, at: index)
@@ -360,6 +375,7 @@ final class DiaryStore {
             try? fileManager.removeItem(at: entry.assetsDirectory)
             entries.remove(at: index)
             focusEntryID = visibleEntries.first?.id
+            onDiskChange?()
             return true
         } catch {
             errorMessage = "删除失败：\(error.localizedDescription)"
@@ -378,15 +394,20 @@ final class DiaryStore {
         persist(tombstone, at: index)
     }
 
-    private func persist(_ entry: DiaryEntry, at index: Int) {
+    @discardableResult
+    private func persist(_ entry: DiaryEntry, at index: Int) -> Bool {
         let key = privacy.encryptionKey
         var updated = entry
         updated.isEncrypted = entry.isPrivate && !entry.isDeleted && key != nil
+        updated.encryptionSalt = updated.isEncrypted ? privacy.encryptionSalt : nil
         do {
-            try updated.makeDocument(encryptionKey: key).write(to: updated.fileURL)
+            try updated.makeDocument(encryptionKey: key, encryptionSalt: privacy.encryptionSalt).write(to: updated.fileURL)
             entries[index] = updated
+            onDiskChange?()
+            return true
         } catch {
             errorMessage = "保存失败：\(error.localizedDescription)"
+            return false
         }
     }
 
@@ -398,9 +419,11 @@ final class DiaryStore {
         for index in entries.indices where entries[index].isPrivate && !entries[index].isEncrypted {
             var entry = entries[index]
             entry.isEncrypted = true
+            entry.encryptionSalt = privacy.encryptionSalt
             do {
-                try entry.makeDocument(encryptionKey: key).write(to: entry.fileURL)
+                try entry.makeDocument(encryptionKey: key, encryptionSalt: privacy.encryptionSalt).write(to: entry.fileURL)
                 entries[index] = entry
+                onDiskChange?()
             } catch {
                 errorMessage = "加密失败：\(error.localizedDescription)"
             }
@@ -412,10 +435,13 @@ final class DiaryStore {
         guard let key = privacy.encryptionKey else { return }
         for index in entries.indices where entries[index].isPrivate {
             var entry = entries[index]
+            guard entry.isContentAvailable else { continue }
             entry.isEncrypted = !entry.isDeleted
+            entry.encryptionSalt = entry.isEncrypted ? privacy.encryptionSalt : nil
             do {
-                try entry.makeDocument(encryptionKey: key).write(to: entry.fileURL)
+                try entry.makeDocument(encryptionKey: key, encryptionSalt: privacy.encryptionSalt).write(to: entry.fileURL)
                 entries[index] = entry
+                onDiskChange?()
             } catch {
                 errorMessage = "重新加密失败：\(error.localizedDescription)"
             }
@@ -426,10 +452,13 @@ final class DiaryStore {
     func decryptPrivateEntries() {
         for index in entries.indices where entries[index].isEncrypted {
             var entry = entries[index]
+            guard entry.isContentAvailable else { continue }
             entry.isEncrypted = false
+            entry.encryptionSalt = nil
             do {
                 try entry.makeDocument(encryptionKey: nil).write(to: entry.fileURL)
                 entries[index] = entry
+                onDiskChange?()
             } catch {
                 errorMessage = "解密失败：\(error.localizedDescription)"
             }
@@ -437,6 +466,30 @@ final class DiaryStore {
     }
 
     // MARK: - 图片
+
+    /// 为本机旧版密文补齐可跨设备解密的公开参数，不上传密码或验证哈希。
+    func prepareForSync() throws {
+        for index in entries.indices where entries[index].isEncrypted && entries[index].encryptionSalt == nil {
+            var doc = try EntryDocument.read(from: entries[index].fileURL)
+            if let salt = doc.frontMatter.string("encryption_salt") {
+                entries[index].encryptionSalt = salt
+                continue
+            }
+            guard let salt = privacy.encryptionSalt, let key = privacy.encryptionKey else {
+                throw DiarySyncError.unlockLegacyEncryption
+            }
+            guard PrivacyCrypto.open(doc.body, key: key) != nil else {
+                throw DiarySyncError.invalidEntry(entries[index].fileURL.lastPathComponent)
+            }
+            doc.frontMatter.set("encryption_salt", .scalar(salt))
+            if doc.frontMatter.string("updated") == nil {
+                doc.frontMatter.set("updated", .scalar(ISO8601.string(entries[index].updated)))
+            }
+            try doc.write(to: entries[index].fileURL)
+            entries[index].encryptionSalt = salt
+            onDiskChange?()
+        }
+    }
 
     /// 把图片复制进条目的 assets 目录，返回相对路径（相对条目文件所在目录）。
     func importImage(from sourceURL: URL, for entryID: String) -> String? {
@@ -450,6 +503,7 @@ final class DiaryStore {
             let name = String(UUID().uuidString.prefix(8)).lowercased() + "." + ext
             let destination = directory.appendingPathComponent(name)
             try FileManager.default.copyItem(at: sourceURL, to: destination)
+            onDiskChange?()
             return entry.assetRelativePath(for: name)
         } catch {
             errorMessage = "无法插入图片：\(error.localizedDescription)"
@@ -471,6 +525,7 @@ final class DiaryStore {
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             try data.write(to: directory.appendingPathComponent(name), options: .atomic)
+            onDiskChange?()
             return entry.assetRelativePath(for: name)
         } catch {
             errorMessage = "无法插入图片：\(error.localizedDescription)"
@@ -516,6 +571,7 @@ extension DiaryStore {
         let oldPrefix = oldAssets.lastPathComponent + "/"
         let newPrefix = "assets/\(entry.stem)/"
         var body = document.body
+        let key = privacy.encryptionKey(for: document.frontMatter.string("encryption_salt"))
         if entry.isEncrypted {
             guard let key, let plaintext = PrivacyCrypto.open(body, key: key) else { return source }
             body = plaintext
@@ -574,6 +630,7 @@ extension DiaryStore {
             throw error
         }
         if hasAssets { try? manager.removeItem(at: oldAssets) }
+        onDiskChange?()
         return destination
     }
 }
