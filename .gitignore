@@ -1,0 +1,29 @@
+# macOS metadata
+.DS_Store
+._*
+
+# Xcode build products and local state
+/build/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+*.xccheckout
+*.xcscmblueprint
+*.moved-aside
+*.xcarchive
+*.dSYM
+*.dSYM.zip
+*.app
+
+# Swift Package Manager build artifacts
+.build/
+.swiftpm/
+
+# Local project backups
+/Diary-*.zip
+
+# Temporary files
+*.log
+*.tmp
+*.swp
+*~
