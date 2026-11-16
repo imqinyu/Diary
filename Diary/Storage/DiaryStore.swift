@@ -203,7 +203,8 @@ final class DiaryStore {
             excerpt: "",
             fileURL: directory.appendingPathComponent(stem).appendingPathExtension("md"),
             bodyMarkdown: "",
-            editableUntil: editWindow.map { now.addingTimeInterval($0) }
+            editableUntil: editWindow.map { now.addingTimeInterval($0) },
+            isBackfilled: editWindow != nil
         )
 
         do {
@@ -500,6 +501,14 @@ extension DiaryStore {
               let day = Self.dayDirectory(for: entry.dayKey, under: entriesDirectory) else { return source }
         let destination = day.appendingPathComponent(source.lastPathComponent)
         guard destination.resolvingSymlinksInPath() != source.resolvingSymlinksInPath() else { return source }
+        // 迁移会改变文件的磁盘修改时间，先固定从旧文件推断出来的补写状态。
+        document.frontMatter.set("backfilled", .scalar(entry.isBackfilled ? "true" : "false"))
+        if document.frontMatter.string("updated") == nil {
+            document.frontMatter.set("updated", .scalar(ISO8601.string(entry.updated)))
+        }
+        if document.frontMatter.string("created") == nil {
+            document.frontMatter.set("created", .scalar(ISO8601.string(entry.created)))
+        }
 
         let oldAssets = source.deletingPathExtension().appendingPathExtension("assets")
         let newAssets = day.appendingPathComponent("assets", isDirectory: true)

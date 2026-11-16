@@ -77,7 +77,7 @@ struct LayoutChecks {
 
         // 用真实侧栏验证主题色、选中状态和联动后的计数布局。
         for (index, mood, image) in [(1, "happy", true), (2, "happy", false), (3, "calm", false)] {
-            let document = EntryDocument.decode("""
+            var document = EntryDocument.decode("""
             ---
             id: layout-\(index)
             date: \(DayKey.today())
@@ -87,11 +87,13 @@ struct LayoutChecks {
             ---
             布局检查。\(image ? "\n![测试](sample.png)" : "")
             """)
+            if index == 1 { document.frontMatter.set("backfilled", .scalar("true")) }
             try document.write(to: store.entriesDirectory.appendingPathComponent("layout-\(index).md"))
         }
         store.reload()
         let sidebarCases: [(String, EntryFilter)] = [
             ("sidebar", EntryFilter(mood: .happy)),
+            ("sidebar-backfilled", EntryFilter(backfilledOnly: true)),
             ("sidebar-no-photos", EntryFilter(mood: .calm)),
             ("sidebar-zero-mood", EntryFilter(mood: .happy, attachments: .withImages)),
             ("sidebar-no-results", EntryFilter(mood: .happy, tag: "不存在"))
@@ -114,6 +116,19 @@ struct LayoutChecks {
             }
             window.contentView = nil
         }
+        let marked = store.entry(with: "layout-1")!
+        let row = EntryRow(entry: marked).environment(store).environment(privacy)
+            .padding().frame(width: 330, height: 140)
+            .background(Color(nsColor: .windowBackgroundColor))
+        let rowHosting = NSHostingView(rootView: row)
+        let rowWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 330, height: 140), styleMask: .borderless, backing: .buffered, defer: false)
+        rowWindow.contentView = rowHosting
+        settle(rowHosting)
+        if let bitmap = rowHosting.bitmapImageRepForCachingDisplay(in: rowHosting.bounds) {
+            rowHosting.cacheDisplay(in: rowHosting.bounds, to: bitmap)
+            try bitmap.representation(using: .png, properties: [:])?.write(to: output.appendingPathComponent("backfilled-row.png"))
+        }
+        rowWindow.contentView = nil
         // 记录 AppKit 动画参数，窗口始终离屏；首次定尺寸不动画，后续伸缩动画。
         let animationWindow = ResizeRecordingWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 500), styleMask: .borderless, backing: .buffered, defer: false)
         let controller = SettingsWindowResizeController()

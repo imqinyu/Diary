@@ -72,10 +72,7 @@ struct EntryDetailView: View {
         }
         .confirmationDialog("删除这一页？", isPresented: $isConfirmingDelete) {
             Button("删除", role: .destructive) {
-                if store.willLeaveTombstone(entryID: entry.id) {
-                    flush()
-                }
-                store.deleteEntry(entryID: entry.id)
+                performDelete()
             }
             Button("取消", role: .cancel) {}
         } message: {
@@ -167,6 +164,11 @@ struct EntryDetailView: View {
                 )
                 .fixedSize()
 
+                if current.isBackfilled {
+                    Label("补写", systemImage: "clock.arrow.circlepath")
+                        .fixedSize()
+                }
+
                 if let mood = current.mood {
                     Label(mood.displayName, systemImage: mood.symbolName)
                         .foregroundStyle(mood.tint)
@@ -228,7 +230,12 @@ struct EntryDetailView: View {
     private var formatBar: some View {
         HStack(spacing: 14) {
             Button {
-                isConfirmingDelete = true
+                let title = titleDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                if current.needsDeletionConfirmation(markdown: latestMarkdown, title: title == autoTitle ? "" : title) {
+                    isConfirmingDelete = true
+                } else {
+                    performDelete()
+                }
             } label: {
                 Image(systemName: "trash")
             }
@@ -365,6 +372,16 @@ struct EntryDetailView: View {
     }()
 
     // MARK: - 保存
+
+    private func performDelete() {
+        if store.willLeaveTombstone(entryID: entry.id) {
+            flush()
+        } else {
+            saveTask?.cancel()
+            saveTask = nil
+        }
+        store.deleteEntry(entryID: entry.id)
+    }
 
     private func handleChange(_ attributed: NSAttributedString) {
         let markdown = MarkdownCodec.encode(attributed)

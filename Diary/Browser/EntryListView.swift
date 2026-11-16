@@ -110,8 +110,11 @@ struct EntryRow: View {
                         .lineLimit(2)
                 }
 
-                if entry.attachmentCount > 0 || !entry.tags.isEmpty || entry.location != nil {
+                if entry.isBackfilled || entry.attachmentCount > 0 || !entry.tags.isEmpty || entry.location != nil {
                     HStack(spacing: 8) {
+                        if entry.isBackfilled {
+                            Label("补写", systemImage: "clock.arrow.circlepath")
+                        }
                         if entry.attachmentCount > 0 {
                             Label(attachmentCountText, systemImage: "photo")
                         }

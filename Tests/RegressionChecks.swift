@@ -19,7 +19,8 @@ struct RegressionChecks {
         let activeFilters = [
             EntryFilter(time: .today), EntryFilter(mood: .happy), EntryFilter(tag: "旅行"),
             EntryFilter(attachments: .withImages), EntryFilter(locationProvince: "浙江省"),
-            EntryFilter(locationCity: "杭州市"), EntryFilter(weatherText: "晴"), EntryFilter(privateOnly: true)
+            EntryFilter(locationCity: "杭州市"), EntryFilter(weatherText: "晴"), EntryFilter(privateOnly: true),
+            EntryFilter(backfilledOnly: true)
         ]
         precondition(activeFilters.allSatisfy { !$0.isAllSelected })
 
@@ -77,6 +78,24 @@ struct RegressionChecks {
         precondition(filter.entries(in: locked, excluding: .mood).isEmpty)
         precondition(filter.entries(in: locked, excluding: .type).allSatisfy { !$0.isPrivate })
 
+        var backfill = entries[0]
+        backfill.id = "backfill"
+        backfill.isBackfilled = true
+        var privateBackfill = privateEntry
+        privateBackfill.isBackfilled = true
+        let candidates = entries + [backfill, privateBackfill]
+        filter = EntryFilter(mood: .happy, backfilledOnly: true)
+        expect(candidates.filter(filter.matches), ["backfill", "private"])
+        precondition(filter.entries(in: candidates, excluding: .type).filter(\.isBackfilled).count == 2)
+        expect(filter.entries(in: candidates, excluding: .mood), ["backfill", "private"])
+        precondition(!filter.excluding(.type).backfilledOnly)
+        expect(candidates.filter { !$0.isPrivate }.filter(filter.matches), ["backfill"])
+        filter.tag = "不存在"
+        precondition(filter.entries(in: candidates, excluding: .type).filter(\.isBackfilled).isEmpty)
+        filter = EntryFilter()
+        precondition(filter.isAllSelected && !filter.backfilledOnly)
+        checkBackfillAndDeletion()
+
         let suite = "DiaryRegressionChecks.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -101,7 +120,54 @@ struct RegressionChecks {
         precondition(grow.height == 700 && grow.maxY == frame.maxY)
         let overflow = SettingsWindowGeometry.targetFrame(current: frame, viewportHeight: 450, contentHeight: 2000, screen: screen)
         precondition(overflow.height == 976 && overflow.minY >= screen.minY && overflow.maxY <= screen.maxY)
-        print("PASS: selection, combined counts, search, zero results, live metadata, privacy visibility, theme persistence, and settings resize geometry")
+        print("PASS: selection, combined counts, backfill detection and filtering, pending-content deletion confirmation, search, zero results, live metadata, privacy visibility, theme persistence, and settings resize geometry")
+    }
+
+    static func checkBackfillAndDeletion() {
+        let day = "2024-06-10"
+        let originalDate = DayKey.date(from: day)!
+        let laterDate = DayKey.date(from: "2026-11-16")!
+        var fm = FrontMatter()
+        fm.set("date", .scalar(day))
+        fm.set("created", .scalar(ISO8601.string(originalDate)))
+        fm.set("updated", .scalar(ISO8601.string(laterDate)))
+        let url = URL(fileURLWithPath: "/tmp/2024-06-10-1.md")
+        func load(_ fm: FrontMatter, body: String = "") -> DiaryEntry {
+            DiaryEntry(document: EntryDocument(frontMatter: fm, body: body), fileURL: url)!
+        }
+        precondition(load(fm).isBackfilled)
+        fm.set("updated", .scalar(ISO8601.string(originalDate.addingTimeInterval(23 * 60 * 60))))
+        precondition(!load(fm).isBackfilled) // 同一天正常编辑不算补写。
+        fm.set("editable_until", .scalar(ISO8601.string(laterDate)))
+        precondition(load(fm).isBackfilled) // 已过期的补写也保留身份。
+        fm.set("editable_until", nil)
+        fm.set("backfilled", .scalar("true"))
+        let explicit = load(fm)
+        precondition(explicit.isBackfilled)
+        precondition(load(explicit.makeDocument().frontMatter).isBackfilled)
+        fm.set("backfilled", nil)
+        fm.set("deleted", .scalar("true"))
+        fm.set("deletedAt", .scalar(ISO8601.string(laterDate)))
+        fm.set("updated", .scalar(ISO8601.string(laterDate)))
+        precondition(!load(fm).isBackfilled) // 删除旧日记不等于补写。
+        fm.set("backfilled", .scalar("false"))
+        fm.set("created", .scalar(ISO8601.string(laterDate)))
+        precondition(!load(fm).isBackfilled) // 墓碑使用删除前记录的身份。
+        fm.set("backfilled", .scalar("true"))
+        precondition(load(fm).isBackfilled)
+        fm.set("deleted", .scalar("false"))
+        fm.set("backfilled", nil)
+        fm.set("date", .scalar("2027-01-01"))
+        precondition(!load(fm).isBackfilled)
+
+        let blank = load(fm, body: " \n\t")
+        precondition(!blank.needsDeletionConfirmation())
+        precondition(blank.needsDeletionConfirmation(markdown: "尚未保存的正文"))
+        precondition(blank.needsDeletionConfirmation(markdown: "![](assets/photo.png)"))
+        precondition(blank.needsDeletionConfirmation(title: "仅有标题也要确认"))
+        let written = load(fm, body: "已经保存的正文")
+        precondition(written.needsDeletionConfirmation())
+        precondition(!written.needsDeletionConfirmation(markdown: "")) // 当前编辑器已清空。
     }
 
     static func expect(_ entries: [DiaryEntry], _ ids: Set<String>) {

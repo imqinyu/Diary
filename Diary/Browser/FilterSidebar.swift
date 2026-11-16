@@ -37,13 +37,16 @@ struct FilterSidebar: View {
             }
 
             if count(for: .withImages) > 0 || count(for: .withoutImages) > 0
-                || (privacy.isUnlocked && privateCount > 0) {
+                || backfilledCount > 0 || (privacy.isUnlocked && privateCount > 0) {
                 Section("类型") {
                     if count(for: .withImages) > 0 {
                         attachmentRow(.withImages)
                     }
                     if count(for: .withoutImages) > 0 {
                         attachmentRow(.withoutImages)
+                    }
+                    if backfilledCount > 0 {
+                        backfilledRow
                     }
                     // 锁着的时候连这个入口都不出现，免得旁人看出有隐藏内容
                     if privacy.isUnlocked && privateCount > 0 {
@@ -333,6 +336,7 @@ struct FilterSidebar: View {
         return Button {
             filter.attachments = isSelected ? .any : value
             filter.privateOnly = false
+            filter.backfilledOnly = false
         } label: {
             rowLabel(
                 title: value.title,
@@ -350,6 +354,7 @@ struct FilterSidebar: View {
         return Button {
             filter.privateOnly.toggle()
             filter.attachments = .any
+            filter.backfilledOnly = false
         } label: {
             rowLabel(
                 title: "隐私",
@@ -360,6 +365,15 @@ struct FilterSidebar: View {
         }
         .buttonStyle(.plain)
         .listRowBackground(isSelected ? accent.opacity(0.14) : Color.clear)
+    }
+
+    private var backfilledRow: some View {
+        row(title: "补写", symbol: "clock.arrow.circlepath", count: backfilledCount,
+            isSelected: filter.backfilledOnly) {
+            filter.backfilledOnly.toggle()
+            filter.attachments = .any
+            filter.privateOnly = false
+        }
     }
 
     // MARK: - 地点
@@ -504,6 +518,10 @@ struct FilterSidebar: View {
 
     private var privateCount: Int {
         entries(excluding: .type).filter(\.isPrivate).count
+    }
+
+    private var backfilledCount: Int {
+        entries(excluding: .type).filter(\.isBackfilled).count
     }
 
     /// 只列叠加其它筛选后仍有日记的年份，新的在前。

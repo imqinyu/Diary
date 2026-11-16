@@ -70,6 +70,8 @@ struct DiaryEntry: Identifiable, Hashable {
     var editableUntil: Date? = nil
     /// 正文是否以密文保存（只有私密条目会）。
     var isEncrypted: Bool = false
+    /// 显式补写标记，旧文件在读取时根据补写期和编辑日期补推。
+    var isBackfilled: Bool = false
 
     /// 普通条目只有当天可写；插入的旧日记在半天的补写期内可写，过期自动只读。
     func canEdit(at date: Date) -> Bool {
@@ -85,6 +87,12 @@ struct DiaryEntry: Identifiable, Hashable {
     }
 
     var day: Date? { DayKey.date(from: dayKey) }
+
+    /// 删除按编辑器当前内容判断，避免尚未保存的正文被当成空白。
+    func needsDeletionConfirmation(markdown: String? = nil, title: String? = nil) -> Bool {
+        !(markdown ?? bodyMarkdown).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !(title ?? self.title).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 
     /// 文件名主干，例如 `2026-11-14-2`
     var stem: String { fileURL.deletingPathExtension().lastPathComponent }
@@ -140,6 +148,16 @@ extension DiaryEntry {
         self.fileURL = fileURL
         self.editableUntil = ISO8601.date(fm.string("editable_until"))
         self.isEncrypted = fm.bool("encrypted") ?? false
+        // 删除也会更新 updated；这个时间不能把原本正常写的日记变成补写。
+        let writingDate = isDeleted && deletedAt != nil ? created : updated
+        let editedLater = DayKey.date(from: dayKey).map {
+            Calendar.current.compare(writingDate, to: $0, toGranularity: .day) == .orderedDescending
+        } ?? false
+        if isDeleted, let recorded = fm.bool("backfilled") {
+            self.isBackfilled = recorded
+        } else {
+            self.isBackfilled = fm.bool("backfilled") == true || editableUntil != nil || editedLater
+        }
 
         // 加密条目在锁定状态下读不出来，正文留空；元数据仍然可用。
         var plainBody = document.body
@@ -233,6 +251,7 @@ extension DiaryEntry {
         fm.set("deleted", .scalar(isDeleted ? "true" : "false"))
         fm.set("deletedAt", deletedAt.map { .scalar(ISO8601.string($0)) })
         fm.set("editable_until", editableUntil.map { .scalar(ISO8601.string($0)) })
+        fm.set("backfilled", .scalar(isBackfilled ? "true" : "false"))
         fm.set("words", .scalar(String(wordCount)))
         fm.set("attachments", .scalar(String(attachmentCount)))
         // 已删除条目没有正文，靠这个字段保留列表里的预览。

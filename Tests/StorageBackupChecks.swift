@@ -97,6 +97,31 @@ struct StorageBackupChecks {
         precondition(path.hasPrefix("assets/\(created.stem)/"))
         store.saveBody(entryID: created.id, markdown: "new ![](\(path))")
 
+        let inserted = store.insertEntry(on: DayKey.date(from: "2024-06-10")!)!
+        precondition(inserted.isBackfilled && inserted.editableUntil != nil)
+        let insertedDocument = try EntryDocument.read(from: inserted.fileURL)
+        precondition(insertedDocument.frontMatter.bool("backfilled") == true)
+        store.reload()
+        precondition(store.entry(with: inserted.id)?.isBackfilled == true)
+        precondition(!created.isBackfilled)
+        let blank = store.createTodayEntry()!
+        precondition(!blank.needsDeletionConfirmation())
+        precondition(store.deleteEntry(entryID: blank.id))
+        precondition(!fm.fileExists(atPath: blank.fileURL.path))
+
+        // 没有 updated 字段的老文件，迁移后仍使用原修改日期判断。
+        var plainLegacy = FrontMatter()
+        plainLegacy.set("date", .scalar("2024-02-02"))
+        let plainFile = entriesRoot.appendingPathComponent("2024/2024-02-02-1.md")
+        try EntryDocument(frontMatter: plainLegacy, body: "当天写的旧日记").write(to: plainFile)
+        let oldModified = DayKey.date(from: "2024-02-02")!
+        try fm.setAttributes([.modificationDate: oldModified], ofItemAtPath: plainFile.path)
+        store.reload()
+        let movedPlain = store.entry(with: "2024-02-02-1")!
+        precondition(!movedPlain.isBackfilled && movedPlain.updated == oldModified)
+        store.reload()
+        precondition(store.entry(with: movedPlain.id)?.isBackfilled == false)
+
         // 同名目标不能被覆盖；移除冲突后可重试。损坏密文保持原样。
         let conflict = try legacy("2021-02-03", 1)
         let conflictTarget = DiaryStore.dayDirectory(for: "2021-02-03", under: entriesRoot)!
@@ -156,6 +181,6 @@ struct StorageBackupChecks {
         try Data([1, 2, 3]).write(to: invalidArchive)
         let invalidRestore = await backup.restore(from: invalidArchive, store: store)
         precondition(!invalidRestore && store.entries.count == savedCount)
-        print("PASS: year/month/day migration, relative images, metadata, encryption, tombstones, repeated reload, multi-entry isolation, conflict preservation, corrupt ciphertext, legacy authorization, bookmarks, backup and restore")
+        print("PASS: year/month/day migration, relative images, metadata, backfill persistence, blank deletion, encryption, tombstones, repeated reload, multi-entry isolation, conflict preservation, corrupt ciphertext, legacy authorization, bookmarks, backup and restore")
     }
 }

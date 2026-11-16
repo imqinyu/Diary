@@ -180,11 +180,12 @@ struct EntryFilter: Equatable {
     var weatherText: String?
     /// 只看隐私条目。仅在解锁状态下由界面提供。
     var privateOnly = false
+    var backfilledOnly = false
 
     var isActive: Bool {
         time != .all || mood != nil || tag != nil || attachments != .any
             || locationProvince != nil || locationCity != nil || weatherText != nil
-            || privateOnly
+            || privateOnly || backfilledOnly
     }
 
     var isAllSelected: Bool { !isActive }
@@ -199,6 +200,7 @@ struct EntryFilter: Equatable {
         case .type:
             result.attachments = .any
             result.privateOnly = false
+            result.backfilledOnly = false
         case .province:
             result.locationProvince = nil
             result.locationCity = nil
@@ -221,6 +223,7 @@ struct EntryFilter: Equatable {
         if let locationCity, entry.location?.city != locationCity { return false }
         if let weatherText, entry.weather?.text != weatherText { return false }
         if privateOnly, !entry.isPrivate { return false }
+        if backfilledOnly, !entry.isBackfilled { return false }
         return true
     }
 }
