@@ -79,9 +79,17 @@ final class DiaryStore {
             includingPropertiesForKeys: keys,
             options: [.skipsHiddenFiles, .skipsPackageDescendants]
         ) {
-            for case let url as URL in enumerator {
-                guard url.pathExtension.lowercased() == "md" else { continue }
-                if let entry = Self.loadEntry(at: url, key: key) {
+            // 先收集路径，再迁移，避免遍历期间移动文件导致重复或漏读。
+            let files = enumerator.compactMap { $0 as? URL }.filter { $0.pathExtension.lowercased() == "md" }
+            for url in files {
+                let location: URL
+                do {
+                    location = try migrateEntry(at: url, key: key)
+                } catch {
+                    errorMessage = "整理日记目录失败，原文件已保留：\(error.localizedDescription)"
+                    location = url
+                }
+                if let entry = Self.loadEntry(at: location, key: key) {
                     loaded.append(entry)
                 }
             }
@@ -173,7 +181,7 @@ final class DiaryStore {
     private func createEntry(on dayKey: String, createdAt: Date, editWindow: TimeInterval?) -> DiaryEntry? {
         let nextSequence = (entries.filter { $0.dayKey == dayKey }.map(\.sequence).max() ?? 0) + 1
         let stem = EntryFileName.stem(dayKey: dayKey, sequence: nextSequence)
-        guard let directory = Self.monthDirectory(for: dayKey, under: entriesDirectory) else { return nil }
+        guard let directory = Self.dayDirectory(for: dayKey, under: entriesDirectory) else { return nil }
 
         let now = Date()
         let newEntry = DiaryEntry(
@@ -431,7 +439,7 @@ final class DiaryStore {
 
     /// 把图片复制进条目的 assets 目录，返回相对路径（相对条目文件所在目录）。
     func importImage(from sourceURL: URL, for entryID: String) -> String? {
-        guard let entry = entry(with: entryID) else { return nil }
+        guard let entry = entry(with: entryID), entry.isWritable else { return nil }
         let directory = entry.assetsDirectory
 
         do {
@@ -441,7 +449,28 @@ final class DiaryStore {
             let name = String(UUID().uuidString.prefix(8)).lowercased() + "." + ext
             let destination = directory.appendingPathComponent(name)
             try FileManager.default.copyItem(at: sourceURL, to: destination)
-            return "\(directory.lastPathComponent)/\(name)"
+            return entry.assetRelativePath(for: name)
+        } catch {
+            errorMessage = "无法插入图片：\(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    /// 剪贴板里的图片没有源文件，统一保存成 PNG，正文仍只记录相对路径。
+    func importImage(_ image: NSImage, for entryID: String) -> String? {
+        guard let entry = entry(with: entryID), entry.isWritable else { return nil }
+        guard let tiff = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiff),
+              let data = bitmap.representation(using: .png, properties: [:]) else {
+            errorMessage = "无法读取剪贴板中的图片"
+            return nil
+        }
+        let directory = entry.assetsDirectory
+        let name = UUID().uuidString.lowercased() + ".png"
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try data.write(to: directory.appendingPathComponent(name), options: .atomic)
+            return entry.assetRelativePath(for: name)
         } catch {
             errorMessage = "无法插入图片：\(error.localizedDescription)"
             return nil
@@ -456,10 +485,86 @@ final class DiaryStore {
 // MARK: - 目录划分
 
 extension DiaryStore {
-    /// `entries/2026/2026-11-14-1.md`，按月分年归档，条目多了也不会有超大目录。
-    static func monthDirectory(for dayKey: String, under root: URL) -> URL? {
-        let year = String(dayKey.prefix(4))
-        guard year.count == 4, Int(year) != nil else { return nil }
-        return root.appendingPathComponent(year, isDirectory: true)
+    /// `entries/2026/11/14/2026-11-14-1.md`，同一天的 Markdown 与 assets 放在一起。
+    static func dayDirectory(for dayKey: String, under root: URL) -> URL? {
+        guard let date = DayKey.date(from: dayKey), DayKey.string(from: date) == dayKey else { return nil }
+        let parts = dayKey.split(separator: "-")
+        guard parts.count == 3 else { return nil }
+        return parts.reduce(root) { $0.appendingPathComponent(String($1), isDirectory: true) }
+    }
+
+    /// 复制成功并写好新 Markdown 后才删除旧文件；加密正文在解锁后再迁移。
+    private func migrateEntry(at source: URL, key: SymmetricKey?) throws -> URL {
+        var document = try EntryDocument.read(from: source)
+        guard let entry = DiaryEntry(document: document, fileURL: source, key: key),
+              let day = Self.dayDirectory(for: entry.dayKey, under: entriesDirectory) else { return source }
+        let destination = day.appendingPathComponent(source.lastPathComponent)
+        guard destination.resolvingSymlinksInPath() != source.resolvingSymlinksInPath() else { return source }
+
+        let oldAssets = source.deletingPathExtension().appendingPathExtension("assets")
+        let newAssets = day.appendingPathComponent("assets", isDirectory: true)
+            .appendingPathComponent(entry.stem, isDirectory: true)
+        let oldPrefix = oldAssets.lastPathComponent + "/"
+        let newPrefix = "assets/\(entry.stem)/"
+        var body = document.body
+        if entry.isEncrypted {
+            guard let key, let plaintext = PrivacyCrypto.open(body, key: key) else { return source }
+            body = plaintext
+        }
+        body = body.replacingOccurrences(of: "](\(oldPrefix)", with: "](\(newPrefix)")
+        // 手动添加的其它相对图片路径仍指向原文件，不因 Markdown 移动而失效。
+        let imagePattern = try NSRegularExpression(pattern: "!\\[[^\\]]*\\]\\(([^)]+)\\)")
+        let matches = imagePattern.matches(in: body, range: NSRange(body.startIndex..<body.endIndex, in: body))
+        // 从后往前替换原始匹配，避免新路径与另一个旧路径相同时被再次改写。
+        for match in matches.reversed() {
+            guard let range = Range(match.range(at: 1), in: body) else { continue }
+            let path = String(body[range])
+            guard !path.hasPrefix(newPrefix), !path.hasPrefix("/"), URL(string: path)?.scheme == nil else { continue }
+            let image = source.deletingLastPathComponent().appendingPathComponent(path).resolvingSymlinksInPath()
+            let baseParts = day.resolvingSymlinksInPath().pathComponents
+            let imageParts = image.pathComponents
+            var common = 0
+            while common < min(baseParts.count, imageParts.count), baseParts[common] == imageParts[common] { common += 1 }
+            let relative = (Array(repeating: "..", count: baseParts.count - common) + imageParts.dropFirst(common)).joined(separator: "/")
+            body.replaceSubrange(range, with: relative)
+        }
+        if entry.isEncrypted {
+            guard let key, let encrypted = PrivacyCrypto.seal(body, key: key) else { return source }
+            document.body = encrypted
+        } else {
+            document.body = body
+        }
+
+        let manager = FileManager.default
+        // 不覆盖同名日记或图片目录，冲突时继续从原位置读取。
+        guard !manager.fileExists(atPath: destination.path), !manager.fileExists(atPath: newAssets.path) else {
+            throw CocoaError(.fileWriteFileExists)
+        }
+        let staging = day.appendingPathComponent(".migration-\(UUID().uuidString)", isDirectory: true)
+        try manager.createDirectory(at: staging, withIntermediateDirectories: true)
+        defer { try? manager.removeItem(at: staging) }
+        let stagedFile = staging.appendingPathComponent(source.lastPathComponent)
+        let stagedAssets = staging.appendingPathComponent("assets", isDirectory: true)
+        let hasAssets = manager.fileExists(atPath: oldAssets.path)
+        if hasAssets { try manager.copyItem(at: oldAssets, to: stagedAssets) }
+        try document.write(to: stagedFile)
+        var installedAssets = false
+        var installedFile = false
+        do {
+            if hasAssets {
+                try manager.createDirectory(at: newAssets.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try manager.moveItem(at: stagedAssets, to: newAssets)
+                installedAssets = true
+            }
+            try manager.moveItem(at: stagedFile, to: destination)
+            installedFile = true
+            try manager.removeItem(at: source)
+        } catch {
+            if installedFile { try? manager.removeItem(at: destination) }
+            if installedAssets { try? manager.removeItem(at: newAssets) }
+            throw error
+        }
+        if hasAssets { try? manager.removeItem(at: oldAssets) }
+        return destination
     }
 }

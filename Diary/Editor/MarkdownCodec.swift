@@ -399,7 +399,8 @@ final class FittingImageCell: NSTextAttachmentCell {
     }
 
     override func draw(withFrame cellFrame: NSRect, in controlView: NSView?) {
-        sourceImage.draw(in: cellFrame, from: .zero, operation: .sourceOver, fraction: 1)
+        sourceImage.draw(in: cellFrame, from: .zero, operation: .sourceOver, fraction: 1,
+                         respectFlipped: true, hints: nil)
     }
 
     override func draw(
@@ -408,7 +409,8 @@ final class FittingImageCell: NSTextAttachmentCell {
         characterIndex charIndex: Int,
         layoutManager: NSLayoutManager
     ) {
-        sourceImage.draw(in: cellFrame, from: .zero, operation: .sourceOver, fraction: 1)
+        sourceImage.draw(in: cellFrame, from: .zero, operation: .sourceOver, fraction: 1,
+                         respectFlipped: true, hints: nil)
     }
 
     private func fittedSize(availableWidth: CGFloat) -> NSSize {

@@ -3,6 +3,7 @@ import Observation
 
 enum BackupError: LocalizedError {
     case noFolder
+    case folderNeedsAuthorization
     case archiveFailed(String)
     case unarchiveFailed(String)
     case invalidArchive
@@ -12,6 +13,8 @@ enum BackupError: LocalizedError {
         switch self {
         case .noFolder:
             return "还没有选择备份文件夹"
+        case .folderNeedsAuthorization:
+            return "请重新选择备份文件夹，以保存访问授权"
         case .archiveFailed(let message):
             return "打包失败：\(message)"
         case .unarchiveFailed(let message):
@@ -49,33 +52,57 @@ final class BackupManager {
         }
     }
 
-    private let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
+    private var folderAccess: BackupFolderAccess?
 
     private enum Keys {
         static let folder = "BackupFolderPath"
+        static let bookmark = "BackupFolderBookmark"
         static let interval = "BackupIntervalDays"
         static let lastDate = "BackupLastDate"
     }
 
-    init() {
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
         folderPath = defaults.string(forKey: Keys.folder)
         lastBackupDate = defaults.object(forKey: Keys.lastDate) as? Date
         intervalDays = (defaults.object(forKey: Keys.interval) as? Int) ?? 3
+        if let bookmark = defaults.data(forKey: Keys.bookmark) {
+            do {
+                var stale = false
+                let url = try URL(resolvingBookmarkData: bookmark, options: [.withSecurityScope, .withoutUI, .withoutMounting],
+                                  relativeTo: nil, bookmarkDataIsStale: &stale)
+                let access = BackupFolderAccess(url: url)
+                if stale {
+                    let refreshed = try url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
+                    defaults.set(refreshed, forKey: Keys.bookmark)
+                }
+                folderAccess = access
+                folderPath = url.path
+                defaults.set(url.path, forKey: Keys.folder)
+            } catch {
+                // 失效授权只在界面提示重新选择，不自动访问旧路径或弹系统授权框。
+                folderAccess = nil
+            }
+        }
     }
 
     // MARK: - 状态
 
     var folderURL: URL? {
-        folderPath.map { URL(fileURLWithPath: $0, isDirectory: true) }
+        folderAccess?.url ?? folderPath.map { URL(fileURLWithPath: $0, isDirectory: true) }
     }
 
     var isConfigured: Bool {
-        guard let folderURL else { return false }
-        return FileManager.default.fileExists(atPath: folderURL.path)
+        folderPath != nil
+    }
+
+    var needsFolderAuthorization: Bool {
+        isConfigured && folderAccess == nil
     }
 
     var needsBackup: Bool {
-        guard isConfigured else { return false }
+        guard folderAccess != nil else { return false }
         guard let lastBackupDate else { return true }
         let days = Calendar.current.dateComponents([.day], from: lastBackupDate, to: Date()).day ?? 0
         return days >= intervalDays
@@ -90,14 +117,19 @@ final class BackupManager {
     // MARK: - 设置
 
     func setFolder(_ url: URL, dataRoot: URL) throws {
+        let access = BackupFolderAccess(url: url)
         let target = url.standardizedFileURL
-        let root = dataRoot.standardizedFileURL
-        if target.path == root.path || target.path.hasPrefix(root.path + "/") {
+        let resolvedTarget = target.resolvingSymlinksInPath()
+        let root = dataRoot.standardizedFileURL.resolvingSymlinksInPath()
+        if resolvedTarget.path == root.path || resolvedTarget.path.hasPrefix(root.path + "/") {
             throw BackupError.folderInsideDiary
         }
         try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        let bookmark = try url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
+        folderAccess = access
         folderPath = target.path
         defaults.set(target.path, forKey: Keys.folder)
+        defaults.set(bookmark, forKey: Keys.bookmark)
         errorMessage = nil
     }
 
@@ -105,14 +137,17 @@ final class BackupManager {
 
     @discardableResult
     func backupNow(store: DiaryStore) async -> URL? {
-        guard let folderURL else {
-            errorMessage = BackupError.noFolder.errorDescription
+        guard let access = folderAccess else {
+            errorMessage = (isConfigured ? BackupError.folderNeedsAuthorization : .noFolder).errorDescription
             return nil
         }
         guard !isBusy else { return nil }
 
         isBusy = true
         defer { isBusy = false }
+        // 更改设置也不能在异步打包结束前释放这次操作的目录授权。
+        defer { withExtendedLifetime(access) {} }
+        let folderURL = access.url
 
         let source = store.dataRoot
         let destination = folderURL.appendingPathComponent("Diary-\(Self.stamp()).zip")
@@ -154,7 +189,8 @@ final class BackupManager {
     // MARK: - 恢复
 
     func backups() -> [URL] {
-        guard let folderURL else { return [] }
+        guard let access = folderAccess else { return [] }
+        let folderURL = access.url
         let files = (try? FileManager.default.contentsOfDirectory(
             at: folderURL,
             includingPropertiesForKeys: [.contentModificationDateKey]
@@ -168,8 +204,13 @@ final class BackupManager {
     @discardableResult
     func restore(from archive: URL, store: DiaryStore) async -> Bool {
         guard !isBusy else { return false }
+        guard let access = folderAccess else {
+            errorMessage = (isConfigured ? BackupError.folderNeedsAuthorization : .noFolder).errorDescription
+            return false
+        }
         isBusy = true
         defer { isBusy = false }
+        defer { withExtendedLifetime(access) {} }
 
         let fileManager = FileManager.default
         let workspace = fileManager.temporaryDirectory
@@ -184,20 +225,26 @@ final class BackupManager {
             let importedEntries = try Self.locateEntries(in: workspace)
 
             // 先留一份现状，万一恢复的内容不对还能回去
-            if let folderURL {
-                let safety = folderURL.appendingPathComponent("Diary-替换前-\(Self.stamp()).zip")
-                try? await makeArchive(from: store.dataRoot, to: safety)
-                lastBackupDate = Date()
-                defaults.set(lastBackupDate, forKey: Keys.lastDate)
-                pruneOldBackups(in: folderURL)
-            }
+            let folderURL = access.url
+            let safety = folderURL.appendingPathComponent("Diary-替换前-\(Self.stamp()).zip")
+            try await makeArchive(from: store.dataRoot, to: safety)
+            lastBackupDate = Date()
+            defaults.set(lastBackupDate, forKey: Keys.lastDate)
+            pruneOldBackups(in: folderURL)
 
             let current = store.dataRoot.appendingPathComponent("entries", isDirectory: true)
             let old = workspace.appendingPathComponent("entries-old", isDirectory: true)
             if fileManager.fileExists(atPath: current.path) {
                 try fileManager.moveItem(at: current, to: old)
             }
-            try fileManager.moveItem(at: importedEntries, to: current)
+            do {
+                try fileManager.moveItem(at: importedEntries, to: current)
+            } catch {
+                if fileManager.fileExists(atPath: old.path) {
+                    try fileManager.moveItem(at: old, to: current)
+                }
+                throw error
+            }
             store.reload()
 
             if store.entries.isEmpty && !Self.containsEntries(at: old) {
@@ -217,14 +264,18 @@ final class BackupManager {
             return true
         } catch {
             errorMessage = "恢复失败：\(error.localizedDescription)"
-            try? fileManager.removeItem(at: workspace)
+            if fileManager.fileExists(atPath: workspace.appendingPathComponent("entries-old").path) {
+                errorMessage = "恢复失败，原日记保留在 \(workspace.path)：\(error.localizedDescription)"
+            } else {
+                try? fileManager.removeItem(at: workspace)
+            }
             return false
         }
     }
 
     // MARK: - 内部
 
-    func pruneOldBackups(in folder: URL) {
+    private func pruneOldBackups(in folder: URL) {
         let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []
         let backups = files
             .filter { $0.pathExtension.lowercased() == "zip" && $0.lastPathComponent.hasPrefix("Diary-") }
@@ -292,5 +343,20 @@ final class BackupManager {
 
     static func stamp() -> String {
         stampFormatter.string(from: Date())
+    }
+}
+
+/// 与授权 URL 一起持有访问权限；异步操作保留实例直到完成。
+private final class BackupFolderAccess {
+    let url: URL
+    private let didStartAccess: Bool
+
+    init(url: URL) {
+        self.url = url
+        didStartAccess = url.startAccessingSecurityScopedResource()
+    }
+
+    deinit {
+        if didStartAccess { url.stopAccessingSecurityScopedResource() }
     }
 }

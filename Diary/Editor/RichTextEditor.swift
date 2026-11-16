@@ -9,6 +9,7 @@ struct RichTextEditor: NSViewRepresentable {
     var controller: RichTextController
     /// 追加在正文末尾、跟着正文一起滚动的一行小字。
     var footerText: String?
+    var onPasteImage: ((NSImage) -> NSAttributedString?)? = nil
     var onChange: (NSAttributedString) -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -16,13 +17,13 @@ struct RichTextEditor: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = NSTextView.scrollableTextView()
+        let scrollView = DiaryTextView.scrollableTextView()
         scrollView.drawsBackground = false
         scrollView.borderType = .noBorder
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
 
-        guard let textView = scrollView.documentView as? NSTextView else {
+        guard let textView = scrollView.documentView as? DiaryTextView else {
             return scrollView
         }
 
@@ -41,6 +42,7 @@ struct RichTextEditor: NSViewRepresentable {
         textView.textContainer?.widthTracksTextView = true
         textView.typingAttributes = MarkdownCodec.baseAttributes()
         textView.textStorage?.setAttributedString(initialText)
+        textView.importPastedImage = onPasteImage
 
         context.coordinator.applyFooter(in: textView, text: footerText)
         controller.textView = textView
@@ -49,7 +51,8 @@ struct RichTextEditor: NSViewRepresentable {
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         context.coordinator.parent = self
-        guard let textView = scrollView.documentView as? NSTextView else { return }
+        guard let textView = scrollView.documentView as? DiaryTextView else { return }
+        textView.importPastedImage = onPasteImage
         if textView.isEditable != isEditable {
             textView.isEditable = isEditable
         }

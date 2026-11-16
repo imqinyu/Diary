@@ -89,9 +89,23 @@ struct DiaryEntry: Identifiable, Hashable {
     /// 文件名主干，例如 `2026-11-14-2`
     var stem: String { fileURL.deletingPathExtension().lastPathComponent }
 
-    /// 图片目录，与文件同级、同名加 `.assets`
+    /// 日期目录下的 assets 按篇分开；尚未迁移的旧日记仍使用原目录。
     var assetsDirectory: URL {
-        fileURL.deletingPathExtension().appendingPathExtension("assets")
+        if usesDayDirectory {
+            return fileURL.deletingLastPathComponent().appendingPathComponent("assets", isDirectory: true)
+                .appendingPathComponent(stem, isDirectory: true)
+        }
+        return fileURL.deletingPathExtension().appendingPathExtension("assets")
+    }
+
+    func assetRelativePath(for name: String) -> String {
+        usesDayDirectory ? "assets/\(stem)/\(name)" : "\(stem).assets/\(name)"
+    }
+
+    private var usesDayDirectory: Bool {
+        let parts = dayKey.split(separator: "-").map(String.init)
+        let directories = fileURL.deletingLastPathComponent().pathComponents.suffix(3)
+        return parts.count == 3 && Array(directories) == parts
     }
 }
 

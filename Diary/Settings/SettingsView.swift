@@ -117,7 +117,7 @@ private struct GeneralSettingsView: View {
             }
 
             SettingsSection {
-                Text("每条日记都是一个纯文本 Markdown 文件，图片放在同名的 .assets 文件夹里。你可以直接用任何编辑器打开、用 Git 管理、或者拷到别的设备上。")
+                Text("日记按年份、月份、日期归档，每天的文件夹里存放 Markdown 和 assets 图片文件夹。你可以直接用任何编辑器打开、用 Git 管理、或者拷到别的设备上。")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -226,7 +226,14 @@ private struct BackupSettingsView: View {
                         .lineLimit(2)
                         .truncationMode(.middle)
                     Spacer(minLength: 0)
-                    Button("更改…") { chooseFolder() }
+                    Button(backup.needsFolderAuthorization ? "重新选择…" : "更改…") { chooseFolder() }
+                        .disabled(backup.isBusy)
+                }
+
+                if backup.needsFolderAuthorization {
+                    Text("请重新选择一次备份文件夹，以保存访问授权。")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
                 }
 
                 HStack(spacing: 10) {
@@ -236,7 +243,7 @@ private struct BackupSettingsView: View {
                             refresh()
                         }
                     }
-                    .disabled(backup.isBusy)
+                    .disabled(backup.isBusy || backup.needsFolderAuthorization || !backup.isConfigured)
 
                     Button("导出…") { exportArchive() }
                         .disabled(backup.isBusy)

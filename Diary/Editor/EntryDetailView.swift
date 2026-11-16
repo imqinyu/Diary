@@ -50,6 +50,10 @@ struct EntryDetailView: View {
                 isEditable: writable,
                 controller: controller,
                 footerText: footerText,
+                onPasteImage: { image in
+                    guard let path = store.importImage(image, for: entry.id) else { return nil }
+                    return MarkdownCodec.makeAttachment(image: image, path: path)
+                },
                 onChange: handleChange
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)

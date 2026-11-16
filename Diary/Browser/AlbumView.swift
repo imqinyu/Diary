@@ -56,13 +56,15 @@ struct AlbumView: View {
                 }
             }
         }
+        // 空状态也填满窗口，让顶部筛选栏和内容区使用完整的可用高度。
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .navigationTitle("相册")
         .safeAreaInset(edge: .top, spacing: 0) {
             filterBar
         }
         .task { refresh() }
         .onChange(of: filter) { _, _ in refresh() }
-        .onChange(of: store.entries.count) { _, _ in refresh() }
+        .onChange(of: store.entries) { _, _ in refresh() }
         .onChange(of: privacy.isUnlocked) { _, _ in refresh() }
         .sheet(item: $preview) { photo in
             PhotoPreviewSheet(photo: photo)
