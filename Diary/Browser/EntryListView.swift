@@ -16,7 +16,7 @@ struct EntryListView: View {
                 ContentUnavailableView(
                     "还没有日记",
                     systemImage: "book.closed",
-                    description: Text("点右上角的笔，写下今天的第一页。")
+                    description: Text("点左上角的笔，写下第一页。")
                 )
             } else {
                 List(selection: $selection) {
