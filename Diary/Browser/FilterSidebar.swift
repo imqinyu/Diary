@@ -9,6 +9,7 @@ struct FilterSidebar: View {
     @Environment(AppPreferences.self) private var preferences
 
     @State private var pendingTagDelete: String?
+    @State private var todaySymbol = TimeFilter.today.symbol
 
     // macOS 的 sidebar List 会覆盖环境强调色，选中背景直接使用用户偏好。
     private var accent: Color { preferences.themeColor.color ?? .accentColor }
@@ -19,7 +20,7 @@ struct FilterSidebar: View {
                 // 「全部」也是清空筛选的入口，即使没有匹配条目也始终保留。
                 timeButton(.all, title: "全部", symbol: "tray.full")
                 if count(for: .today) > 0 {
-                    timeButton(.today, title: "今天", symbol: "sun.max")
+                    timeButton(.today, title: "今天", symbol: todaySymbol)
                 }
 
                 if !availableYears.isEmpty && (!isYearSelected || count(for: filter.time) > 0) {
@@ -96,6 +97,12 @@ struct FilterSidebar: View {
 
         }
         .listStyle(.sidebar)
+        .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged)) { _ in
+            todaySymbol = TimeFilter.today.symbol
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            todaySymbol = TimeFilter.today.symbol
+        }
         .confirmationDialog(
             "移除标签「#\(pendingTagDelete ?? "")」？",
             isPresented: Binding(
@@ -431,7 +438,13 @@ struct FilterSidebar: View {
         showsMenuHint: Bool = false
     ) -> some View {
         HStack(spacing: 6) {
-            Image(systemName: symbol)
+            Group {
+                if symbol == todaySymbol {
+                    CalendarDayIcon(symbol: symbol)
+                } else {
+                    Image(systemName: symbol)
+                }
+            }
                 .font(.system(size: 12))
                 .foregroundStyle(isSelected ? (tint ?? accent) : Color.secondary)
                 .frame(width: 16)
@@ -594,5 +607,42 @@ struct FilterSidebar: View {
             for tag in Set(entry.tags) { counts[tag, default: 0] += 1 }
         }
         return sortedCounts(counts)
+    }
+}
+
+/// 新系统优先使用 SF Symbols，macOS 15 使用相同含义的日期日历。
+private struct CalendarDayIcon: View {
+    let symbol: String
+
+    var body: some View {
+        if NSImage(systemSymbolName: symbol, accessibilityDescription: nil) != nil {
+            Image(systemName: symbol)
+        } else {
+            ZStack {
+                CalendarOutline()
+                    .stroke(style: StrokeStyle(lineWidth: 1.1, lineCap: .round, lineJoin: .round))
+                Text(symbol.split(separator: ".").first.map(String.init) ?? "")
+                    .font(.system(size: 7.5, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                    .offset(y: 3)
+            }
+            .frame(width: 14, height: 14)
+        }
+    }
+}
+
+private struct CalendarOutline: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.addRoundedRect(in: CGRect(x: rect.minX + 1, y: rect.minY + 2,
+                                       width: rect.width - 2, height: rect.height - 2.5),
+                            cornerSize: CGSize(width: 1.8, height: 1.8))
+        path.move(to: CGPoint(x: rect.minX + 1, y: rect.minY + 5))
+        path.addLine(to: CGPoint(x: rect.maxX - 1, y: rect.minY + 5))
+        for x in [rect.minX + 4, rect.maxX - 4] {
+            path.move(to: CGPoint(x: x, y: rect.minY + 0.5))
+            path.addLine(to: CGPoint(x: x, y: rect.minY + 3.5))
+        }
+        return path
     }
 }

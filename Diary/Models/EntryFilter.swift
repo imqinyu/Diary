@@ -54,7 +54,7 @@ enum TimeFilter: Equatable, Hashable {
     var symbol: String {
         switch self {
         case .all: return "tray.full"
-        case .today: return "sun.max"
+        case .today: return "\(Calendar.current.component(.day, from: Date())).calendar"
         case .year: return "calendar.circle"
         case .month: return "calendar"
         case .week: return "calendar.badge.clock"
