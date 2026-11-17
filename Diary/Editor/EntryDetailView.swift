@@ -166,6 +166,13 @@ struct EntryDetailView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                if privacy.isUnlocked, !current.isDeleted, !writable {
+                    Button { store.updatePrivacy(entryID: entry.id, isPrivate: !current.isPrivate) } label: {
+                        Image(systemName: current.isPrivate ? "lock.fill" : "lock.open")
+                    }
+                    .buttonStyle(.borderless)
+                    .help(current.isPrivate ? "取消隐私标记" : "标记为隐私条目")
+                }
             }
 
             // 用自动换行排版：窗口一窄也不会把「2026年11月15日 星期日」掰成两行
@@ -478,7 +485,8 @@ struct EntryDetailView: View {
 
         guard let relativePath = store.importImage(from: url, for: entry.id) else { return }
         let absolute = store.assetURL(relativePath: relativePath, for: entry)
-        guard let image = NSImage(contentsOf: absolute) else { return }
+        let decoded = EmbeddedImages.bytes(relativePath).flatMap(NSImage.init(data:))
+        guard let image = decoded ?? NSImage(contentsOf: absolute) else { return }
         controller.insertImage(image, relativePath: relativePath)
     }
 }

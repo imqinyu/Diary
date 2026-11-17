@@ -160,13 +160,15 @@ final class DiaryStore {
             let directory = entry.fileURL.deletingLastPathComponent()
             let title = displayTitle(for: entry)
             for path in MarkdownText.imagePaths(entry.bodyMarkdown) {
-                guard !path.hasPrefix("data:") else { continue }
+                let embedded = EmbeddedImages.bytes(path)
+                if path.hasPrefix("data:") && embedded == nil { continue }
                 items.append(PhotoItem(
                     entryID: entry.id,
                     entryTitle: title,
                     dayKey: entry.dayKey,
                     relativePath: path,
-                    url: directory.appendingPathComponent(path)
+                    url: embedded == nil ? directory.appendingPathComponent(path) : entry.fileURL,
+                    data: embedded
                 ))
             }
         }
@@ -287,13 +289,13 @@ final class DiaryStore {
     }
 
     func updatePrivacy(entryID: String, isPrivate: Bool) {
+        flushEditorsForSync()
         guard let index = entries.firstIndex(where: { $0.id == entryID }) else { return }
         var entry = entries[index]
-        guard entry.isWritable else { return }
+        guard privacy.isUnlocked, !entry.isDeleted, entry.isContentAvailable else { return }
         guard isPrivate != entry.isPrivate else { return }
         entry.isPrivate = isPrivate
-        entry.updated = Date()
-        persist(entry, at: index)
+        if persist(entry, at: index) { reloadFromSync() }
     }
 
     func updateTags(entryID: String, tags: [String]) {
@@ -398,10 +400,18 @@ final class DiaryStore {
     private func persist(_ entry: DiaryEntry, at index: Int) -> Bool {
         let key = privacy.encryptionKey
         var updated = entry
+        guard !entry.isPrivate || entry.isDeleted || key != nil else {
+            errorMessage = "请先解锁隐私日记"; return false
+        }
         updated.isEncrypted = entry.isPrivate && !entry.isDeleted && key != nil
         updated.encryptionSalt = updated.isEncrypted ? privacy.encryptionSalt : nil
         do {
-            try updated.makeDocument(encryptionKey: key, encryptionSalt: privacy.encryptionSalt).write(to: updated.fileURL)
+            if updated.isEncrypted { updated = try embeddedEntry(updated) }
+            let document = try protectedDocument(updated, key: updated.isEncrypted ? key : nil)
+            try document.write(to: updated.fileURL)
+            if updated.isEncrypted {
+                for url in removablePrivateAssets(updated) { try FileManager.default.removeItem(at: url) }
+            }
             entries[index] = updated
             onDiskChange?()
             return true
@@ -413,62 +423,107 @@ final class DiaryStore {
 
     // MARK: - 加密迁移
 
-    /// 解锁后把还停留在明文的私密条目就地加密。
-    func encryptPlaintextPrivateEntries() {
-        guard let key = privacy.encryptionKey else { return }
-        for index in entries.indices where entries[index].isPrivate && !entries[index].isEncrypted {
-            var entry = entries[index]
-            entry.isEncrypted = true
-            entry.encryptionSalt = privacy.encryptionSalt
-            do {
-                try entry.makeDocument(encryptionKey: key, encryptionSalt: privacy.encryptionSalt).write(to: entry.fileURL)
-                entries[index] = entry
-                onDiskChange?()
-            } catch {
-                errorMessage = "加密失败：\(error.localizedDescription)"
-            }
+    private func embeddedEntry(_ entry: DiaryEntry) throws -> DiaryEntry {
+        var result = entry
+        result.bodyMarkdown = try EmbeddedImages.embed(entry.bodyMarkdown) { path in
+            guard !path.contains("://"), !path.hasPrefix("/") else { throw EmbeddedImages.Failure.unreadable(path) }
+            let url = self.assetURL(relativePath: path, for: entry).resolvingSymlinksInPath()
+            guard url.path.hasPrefix(self.entriesDirectory.resolvingSymlinksInPath().path + "/") else { throw EmbeddedImages.Failure.unreadable(path) }
+            do { return try Data(contentsOf: url) } catch { throw EmbeddedImages.Failure.unreadable(path) }
+        }
+        return result
+    }
+
+    private func protectedDocument(_ entry: DiaryEntry, key: SymmetricKey?) throws -> EntryDocument {
+        var document = entry.makeDocument(encryptionKey: nil)
+        if let key, entry.isPrivate, !entry.isDeleted {
+            guard let ciphertext = PrivacyCrypto.seal(entry.bodyMarkdown, key: key) else { throw EmbeddedImages.Failure.encryption }
+            document.body = ciphertext
+            document.frontMatter.set("encrypted", .scalar("true"))
+            document.frontMatter.set("encryption_salt", privacy.encryptionSalt.map { .scalar($0) })
+        }
+        guard document.encode().utf8.count <= SyncFileStore.maximumFileSize else { throw EmbeddedImages.Failure.tooLarge }
+        return document
+    }
+
+    private func removablePrivateAssets(_ entry: DiaryEntry, excluding ids: Set<String> = []) -> [URL] {
+        let shared = Set(entries.filter { $0.id != entry.id && !ids.contains($0.id) && $0.isContentAvailable }.flatMap { other in
+            MarkdownText.imagePaths(other.bodyMarkdown).filter { !$0.hasPrefix("data:") }.map { self.assetURL(relativePath: $0, for: other).resolvingSymlinksInPath().path }
+        })
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .isSymbolicLinkKey]
+        let base = entry.assetsDirectory.resolvingSymlinksInPath().path
+        guard base.hasPrefix(entriesDirectory.resolvingSymlinksInPath().path + "/"),
+              (try? entry.assetsDirectory.resourceValues(forKeys: keys).isSymbolicLink) != true,
+              let enumerator = FileManager.default.enumerator(at: entry.assetsDirectory, includingPropertiesForKeys: Array(keys)) else { return [] }
+        return enumerator.compactMap { $0 as? URL }.filter {
+            guard let values = try? $0.resourceValues(forKeys: keys), values.isRegularFile == true, values.isSymbolicLink != true else { return false }
+            let path = $0.resolvingSymlinksInPath().path
+            return path.hasPrefix(base + "/") && !shared.contains(path)
         }
     }
 
-    /// 改密码后，用新密钥把私密条目整体重写一遍。
-    func reencryptPrivateEntries() {
-        guard let key = privacy.encryptionKey else { return }
-        for index in entries.indices where entries[index].isPrivate {
-            var entry = entries[index]
-            guard entry.isContentAvailable else { continue }
-            entry.isEncrypted = !entry.isDeleted
-            entry.encryptionSalt = entry.isEncrypted ? privacy.encryptionSalt : nil
-            do {
-                try entry.makeDocument(encryptionKey: key, encryptionSalt: privacy.encryptionSalt).write(to: entry.fileURL)
-                entries[index] = entry
-                onDiskChange?()
-            } catch {
-                errorMessage = "重新加密失败：\(error.localizedDescription)"
+    /// Both legacy plaintext and legacy encrypted bodies migrate after unlocking.
+    @discardableResult func encryptPlaintextPrivateEntries() -> Bool { rewritePrivateEntries(encrypt: true, onlyLegacy: true) }
+    @discardableResult func reencryptPrivateEntries() -> Bool { rewritePrivateEntries(encrypt: true) }
+    @discardableResult func decryptPrivateEntries() -> Bool { rewritePrivateEntries(encrypt: false) }
+
+    @discardableResult func changePrivacyPassword(current: String, new: String) -> Bool {
+        flushEditorsForSync()
+        guard privacy.changePassword(current: current, new: new) else { errorMessage = privacy.errorMessage; return false }
+        if reencryptPrivateEntries() { return true }
+        // A failed directory transaction leaves the old ciphertext intact; retain its password.
+        _ = privacy.changePassword(current: new, new: current)
+        reloadFromSync()
+        return false
+    }
+
+    private func rewritePrivateEntries(encrypt: Bool, onlyLegacy: Bool = false) -> Bool {
+        let targets = entries.filter { entry in
+            entry.isPrivate && !entry.isDeleted && (!onlyLegacy || !entry.isEncrypted || EmbeddedImages.needsEmbedding(entry.bodyMarkdown) || !removablePrivateAssets(entry).isEmpty)
+        }
+        guard !targets.isEmpty else { return true }
+        guard targets.allSatisfy(\.isContentAvailable), !encrypt || privacy.encryptionKey != nil else {
+            errorMessage = "请先解锁所有隐私日记"; return false
+        }
+        do {
+            let disk = SyncFileStore(directory: dataRoot.appendingPathComponent(".privacy-work"))
+            let before = try disk.scan(root: dataRoot)
+            var files = before.data
+            let ids = Set(targets.map(\.id))
+            for entry in targets {
+                var next = encrypt ? try embeddedEntry(entry) : entry
+                next.isEncrypted = encrypt
+                next.encryptionSalt = encrypt ? privacy.encryptionSalt : nil
+                let document = try protectedDocument(next, key: encrypt ? privacy.encryptionKey : nil)
+                let path = try relativeStoragePath(entry.fileURL)
+                files[path] = Data(document.encode().utf8)
+                if encrypt { for url in removablePrivateAssets(entry, excluding: ids) { files.removeValue(forKey: try relativeStoragePath(url)) } }
             }
+            _ = try disk.apply(files: files, expected: before.hashes, root: dataRoot)
+            reloadFromSync()
+            onDiskChange?()
+            return true
+        } catch {
+            errorMessage = "隐私图片迁移失败，原文件已保留：\(error.localizedDescription)"
+            return false
         }
     }
 
-    /// 关闭隐私保护时先把内容解回明文，否则密码一删内容就永远打不开了。
-    func decryptPrivateEntries() {
-        for index in entries.indices where entries[index].isEncrypted {
-            var entry = entries[index]
-            guard entry.isContentAvailable else { continue }
-            entry.isEncrypted = false
-            entry.encryptionSalt = nil
-            do {
-                try entry.makeDocument(encryptionKey: nil).write(to: entry.fileURL)
-                entries[index] = entry
-                onDiskChange?()
-            } catch {
-                errorMessage = "解密失败：\(error.localizedDescription)"
-            }
-        }
+    private func relativeStoragePath(_ url: URL) throws -> String {
+        let root = dataRoot.resolvingSymlinksInPath().pathComponents
+        let path = url.resolvingSymlinksInPath().pathComponents
+        guard Array(path.prefix(root.count)) == root else { throw DiarySyncError.unsafePath(url.lastPathComponent) }
+        return path.dropFirst(root.count).joined(separator: "/")
     }
 
     // MARK: - 图片
 
     /// 为本机旧版密文补齐可跨设备解密的公开参数，不上传密码或验证哈希。
     func prepareForSync() throws {
+        if entries.contains(where: { $0.isPrivate && !$0.isDeleted && !$0.isContentAvailable && !removablePrivateAssets($0).isEmpty }) {
+            throw EmbeddedImages.Failure.unreadable("旧隐私图片需要先解锁迁移")
+        }
+        if privacy.isUnlocked, !encryptPlaintextPrivateEntries() { throw EmbeddedImages.Failure.encryption }
         for index in entries.indices where entries[index].isEncrypted && entries[index].encryptionSalt == nil {
             var doc = try EntryDocument.read(from: entries[index].fileURL)
             if let salt = doc.frontMatter.string("encryption_salt") {
@@ -495,6 +550,10 @@ final class DiaryStore {
     func importImage(from sourceURL: URL, for entryID: String) -> String? {
         guard let entry = entry(with: entryID), entry.isWritable else { return nil }
         let directory = entry.assetsDirectory
+        if entry.isPrivate {
+            do { return try EmbeddedImages.uri(Data(contentsOf: sourceURL), extension: sourceURL.pathExtension) }
+            catch { errorMessage = "无法插入图片：\(error.localizedDescription)"; return nil }
+        }
 
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -519,6 +578,10 @@ final class DiaryStore {
               let data = bitmap.representation(using: .png, properties: [:]) else {
             errorMessage = "无法读取剪贴板中的图片"
             return nil
+        }
+        if entry.isPrivate {
+            do { return try EmbeddedImages.uri(data, extension: "png") }
+            catch { errorMessage = "无法插入图片：\(error.localizedDescription)"; return nil }
         }
         let directory = entry.assetsDirectory
         let name = UUID().uuidString.lowercased() + ".png"

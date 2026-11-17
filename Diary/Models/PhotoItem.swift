@@ -7,6 +7,7 @@ struct PhotoItem: Identifiable, Hashable {
     let dayKey: String
     let relativePath: String
     let url: URL
+    var data: Data? = nil
 
     var id: String { "\(entryID)|\(relativePath)" }
 }

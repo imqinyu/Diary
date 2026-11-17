@@ -143,6 +143,7 @@ final class PrivacyManager {
     }
 
     func lock() {
+        ThumbnailCache.shared.clear()
         isUnlocked = false
         encryptionKey = nil
         unlockedPassword = nil

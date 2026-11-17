@@ -433,7 +433,7 @@ private struct PrivacySettingsSection: View {
                     Label("锁定后，这些条目在列表、筛选、相册里全都不会出现。", systemImage: "eye.slash")
                     Label("解锁：在搜索框直接输入密码并回车，内容会静默出现。", systemImage: "magnifyingglass")
                     Label("切到别的应用时自动重新上锁。", systemImage: "rectangle.on.rectangle.slash")
-                    Text("隐私正文在磁盘上加密，图片和日期等元数据保持原样。跨设备阅读时，请在另一台设备设置相同的隐私密码。")
+                    Text("隐藏日记的正文和图片一起加密，标题和日期等元数据保持明文。跨设备阅读时，请在另一台设备设置相同的隐私密码。")
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -519,23 +519,20 @@ private struct PrivacySettingsSection: View {
             return
         }
         store.flushEditorsForSync()
-        if privacy.changePassword(current: currentPassword, new: newPassword) {
-            // 密钥换了，私密条目要整体重加密一遍
-            store.reencryptPrivateEntries()
-            store.reloadFromSync()
+        if store.changePrivacyPassword(current: currentPassword, new: newPassword) {
             currentPassword = ""
             newPassword = ""
             newConfirm = ""
             message = "已修改"
         } else {
-            message = privacy.errorMessage
+            message = store.errorMessage ?? privacy.errorMessage
         }
     }
 
     private func disablePrivacy() {
         // 先用当前密钥把内容解回明文，否则密码一删内容就永远打不开了
         if privacy.verify(disablePassword) {
-            store.decryptPrivateEntries()
+            guard store.decryptPrivateEntries() else { message = store.errorMessage; return }
         }
         if privacy.removePassword(current: disablePassword) {
             disablePassword = ""

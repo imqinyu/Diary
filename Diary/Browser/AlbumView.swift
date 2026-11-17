@@ -228,8 +228,8 @@ private struct PhotoCell: View {
                     .strokeBorder(Color.primary.opacity(0.06))
             )
             .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .task(id: photo.url) {
-                image = await ThumbnailCache.shared.thumbnail(for: photo.url, maxPixel: 480)
+            .task(id: photo.id) {
+                image = await ThumbnailCache.shared.thumbnail(for: photo.url, data: photo.data, maxPixel: 480)
             }
     }
 }
@@ -261,7 +261,7 @@ private struct PhotoPreviewSheet: View {
 
             Divider()
 
-            if let image = NSImage(contentsOf: photo.url) {
+            if let image = photo.data.flatMap(NSImage.init(data:)) ?? NSImage(contentsOf: photo.url) {
                 Image(nsImage: image)
                     .resizable()
                     .scaledToFit()

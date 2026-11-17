@@ -85,7 +85,7 @@ struct SyncSettingsView: View {
                             }.disabled(sync.isBusy || newRepositoryName.trimmingCharacters(in: .whitespaces).isEmpty)
                         }
                     }
-                    Text("只同步 entries 文件夹中的日记和图片。现有隐私保护加密正文，图片和日期等元数据仍为明文。")
+                    Text("只同步 entries 文件夹中的日记和图片。隐藏日记的正文和图片一起加密，标题和日期等元数据仍为明文。")
                         .font(.callout).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }

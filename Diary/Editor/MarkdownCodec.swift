@@ -189,6 +189,9 @@ enum MarkdownCodec {
     }
 
     static func makeAttachment(path: String, entryDirectory: URL) -> NSAttributedString? {
+        if let data = EmbeddedImages.bytes(path), let image = NSImage(data: data) {
+            return makeAttachment(image: image, path: path)
+        }
         let url = entryDirectory.appendingPathComponent(path)
         guard let image = NSImage(contentsOf: url) else { return nil }
         return makeAttachment(image: image, path: path)
@@ -364,7 +367,7 @@ private final class InlineParser {
             if let base64 = path.split(separator: ",").last,
                let data = Data(base64Encoded: String(base64)),
                let image = NSImage(data: data) {
-                return MarkdownCodec.makeAttachment(image: image, path: nil)
+                return MarkdownCodec.makeAttachment(image: image, path: path)
             }
             return nil
         }
