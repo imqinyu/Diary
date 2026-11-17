@@ -41,6 +41,7 @@ struct LayoutChecks {
                 .environment(backup)
                 .environment(location)
                 .environment(sync)
+                .environment(NearbyManager())
                 .accentColor(preferences.themeColor.color)
                 .tint(preferences.themeColor.color)
             let hosting = NSHostingView(rootView: root)

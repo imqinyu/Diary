@@ -8,6 +8,7 @@ struct DiaryApp: App {
     @State private var preferences = AppPreferences()
     @State private var locationService = LocationService()
     @State private var sync = SyncManager()
+    @State private var nearby = NearbyManager()
 
     init() {
         let privacy = PrivacyManager()
@@ -26,6 +27,7 @@ struct DiaryApp: App {
                 .environment(preferences)
                 .environment(locationService)
                 .environment(sync)
+                .environment(nearby)
                 .onAppear { sync.start(store: store) }
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
                     if sync.automaticSync { Task { await sync.syncNow(store: store) } }
@@ -64,6 +66,7 @@ struct DiaryApp: App {
                 .environment(preferences)
                 .environment(locationService)
                 .environment(sync)
+                .environment(nearby)
         }
         .defaultSize(width: 560, height: 600)
         .windowResizability(.automatic)

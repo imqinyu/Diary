@@ -179,19 +179,21 @@
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "日记";
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "用于发现附近安卓并建立加密的日记同步连接。";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "用于通过临时 Wi-Fi 直连与附近安卓同步日记和图片。";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
-				INFOPLIST_KEY_NSLocationUsageDescription = "用于在你同意后把当时的位置记录到日记里。";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "用于在你同意后把当时的位置记录到日记里。";
+				INFOPLIST_KEY_NSLocationUsageDescription = "用于记录日记位置，以及附近同步时查找安卓临时 Wi-Fi。";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "用于记录日记位置，以及附近同步时查找安卓临时 Wi-Fi。";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.qinyu.Diary;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -205,19 +207,21 @@
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "日记";
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "用于发现附近安卓并建立加密的日记同步连接。";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "用于通过临时 Wi-Fi 直连与附近安卓同步日记和图片。";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
-				INFOPLIST_KEY_NSLocationUsageDescription = "用于在你同意后把当时的位置记录到日记里。";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "用于在你同意后把当时的位置记录到日记里。";
+				INFOPLIST_KEY_NSLocationUsageDescription = "用于记录日记位置，以及附近同步时查找安卓临时 Wi-Fi。";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "用于记录日记位置，以及附近同步时查找安卓临时 Wi-Fi。";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.qinyu.Diary;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;

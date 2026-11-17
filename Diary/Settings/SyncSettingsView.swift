@@ -12,6 +12,7 @@ struct SyncSettingsView: View {
 
     var body: some View {
         SettingsForm {
+            NearbySettingsSection()
             SettingsSection("GitHub 账号") {
                 if let account = sync.account {
                     HStack {
