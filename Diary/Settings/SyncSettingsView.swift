@@ -113,7 +113,7 @@ struct SyncSettingsView: View {
                         Link("在 GitHub 中查看", destination: url)
                     }
                 }
-                Text("启动时检查，保存后等待 30 秒合并同步，运行期间每 5 分钟检查更新。离线时继续在本机写，联网后重试。")
+                Text("每次启动检查一次，运行期间每半小时同步。本机保存立即完成；离线时继续写，下一轮联网后重试。")
                     .font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 if let message = sync.errorMessage {

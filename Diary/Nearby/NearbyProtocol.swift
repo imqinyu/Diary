@@ -17,6 +17,19 @@ enum NearbyError: LocalizedError {
 
 enum NearbyCrypto {
     static let label = "DiaryNearby-v1"
+    static func identityChallenge(receiver: String, sender: String, publicKey: String, salt: String, senderKey: String = "") -> Data {
+        Data("DiaryNearby-identity-v1\n\(receiver)\n\(sender)\n\(publicKey)\n\(salt)\n\(senderKey)\n".utf8)
+    }
+    static func verify(identity: String, signature: String, data: Data) -> Bool {
+        guard let bytes = Data(base64Encoded: identity), let signature = Data(base64Encoded: signature),
+              let key = try? P256.Signing.PublicKey(x963Representation: bytes),
+              let value = try? P256.Signing.ECDSASignature(derRepresentation: signature) else { return false }
+        return key.isValidSignature(value, for: data)
+    }
+    static func pairCode(_ key: SymmetricKey, first: String?, second: String?) -> String {
+        guard let first, let second else { return code(key) }
+        return code(derive(key, info: "DiaryNearby-pair-v1:" + [first, second].sorted().joined(separator: ":")))
+    }
     static func shared(_ privateKey: P256.KeyAgreement.PrivateKey, peer: Data, salt: Data) throws -> SymmetricKey {
         guard peer.count == 65, salt.count == 32 else { throw NearbyError.message("附近同步配对信息无效") }
         let secret = try privateKey.sharedSecretFromKeyAgreement(with: P256.KeyAgreement.PublicKey(x963Representation: peer))
@@ -209,13 +222,18 @@ struct NearbyPrepared: @unchecked Sendable {
     let hashes: [String: String]
     let conflicts: [NearbyConflict]
     let state: NearbyState
+    var peerTrust = false
 }
 enum NearbyTransfer {
     private static func expectOK(_ response: [String: Any]) throws {
         guard response["type"] as? String == "ok" else { throw NearbyError.message("附近同步协议响应无效") }
     }
-    static func prepare(wire: NearbyWire, local: SyncLocalSnapshot, space: NearbySpace, peerId: String) throws -> NearbyPrepared {
-        let response = try wire.request("hello", ["peerId": peerId])
+    static func prepare(wire: NearbyWire, local: SyncLocalSnapshot, space: NearbySpace, peerId: String,
+                        identity: String? = nil, expectedIdentity: String? = nil, allowTrust: Bool = false) throws -> NearbyPrepared {
+        var hello: [String: Any] = ["peerId": peerId, "trust": allowTrust]
+        if let identity { hello["identity"] = identity }
+        let response = try wire.request("hello", hello)
+        if let expectedIdentity, response["identity"] as? String != expectedIdentity { throw NearbyError.message("设备身份已改变，请重新配对") }
         guard response["type"] as? String == "snapshot", let remote = response["files"] as? [String: String], validHashes(remote),
               let androidJSON = response["state"] else { throw NearbyError.message("安卓同步文件列表无效") }
         let android = try JSONDecoder().decode(NearbyState.self, from: JSONSerialization.data(withJSONObject: androidJSON))
@@ -278,7 +296,7 @@ enum NearbyTransfer {
         let ready = try wire.request("prepare", ["files": merge.files])
         guard ready["type"] as? String == "ready" else { throw NearbyError.message("安卓尚未准备好同步") }
         state.pending = merge.files; try space.save(state)
-        return NearbyPrepared(files: merged, hashes: merge.files, conflicts: [], state: state)
+        return NearbyPrepared(files: merged, hashes: merge.files, conflicts: [], state: state, peerTrust: response["trust"] as? Bool == true)
     }
 }
 
@@ -300,4 +318,24 @@ func nearbyIPv4Ready(interface: String, host: String) -> Bool {
         if netmask != 0 && ip != target.s_addr && (ip & netmask) == (target.s_addr & netmask) { return true }
     }
     return false
+}
+
+struct NearbyTrustedDevice: Codable, Identifiable {
+    let id: String
+    let name: String
+    let identity: String
+}
+struct NearbySigningIdentity: @unchecked Sendable {
+    let key: P256.Signing.PrivateKey
+    var publicKey: String { key.publicKey.x963Representation.base64EncodedString() }
+    static func load() throws -> NearbySigningIdentity {
+        let service = (Bundle.main.bundleIdentifier ?? ProcessInfo.processInfo.processName) + ".nearby-identity"
+        let credentials = KeychainSyncCredentials(service: service, account: "identity")
+        if let saved = try credentials.read(), let data = Data(base64Encoded: saved) {
+            return NearbySigningIdentity(key: try P256.Signing.PrivateKey(rawRepresentation: data))
+        }
+        let key = P256.Signing.PrivateKey()
+        try credentials.save(key.rawRepresentation.base64EncodedString())
+        return NearbySigningIdentity(key: key)
+    }
 }

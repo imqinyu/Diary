@@ -221,7 +221,7 @@ final class DiaryStore {
             excerpt: "",
             fileURL: directory.appendingPathComponent(stem).appendingPathExtension("md"),
             bodyMarkdown: "",
-            editableUntil: editWindow.map { now.addingTimeInterval($0) },
+            editableUntil: now.addingTimeInterval(editWindow ?? 24 * 60 * 60),
             isBackfilled: editWindow != nil
         )
 

@@ -106,7 +106,7 @@ final class SyncManager {
         periodicTask = Task { [weak self] in
             if let self, self.automaticSync { await self.syncNow(store: store) }
             while !Task.isCancelled {
-                do { try await Task.sleep(for: .seconds(5 * 60)) } catch { return }
+                do { try await Task.sleep(for: .seconds(30 * 60)) } catch { return }
                 guard let self else { return }
                 if self.automaticSync && self.unresolvedConflicts.isEmpty { await self.syncNow(store: store) }
             }
@@ -123,15 +123,8 @@ final class SyncManager {
     }
 
     func schedule() {
-        guard automaticSync, canSync, unresolvedConflicts.isEmpty, let store else { return }
-        if isBusy { pendingSync = true; return }
-        status = "等待同步"
-        scheduledTask?.cancel()
-        scheduledTask = Task { [weak self, weak store] in
-            do { try await Task.sleep(for: .seconds(30)) } catch { return }
-            guard let self, let store else { return }
-            await self.syncNow(store: store)
-        }
+        guard automaticSync, canSync, unresolvedConflicts.isEmpty, store != nil else { return }
+        if !isBusy { status = "本机已保存，等待每半小时同步" }
     }
 
     func beginLogin() {

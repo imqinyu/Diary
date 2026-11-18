@@ -14,10 +14,14 @@ protocol SyncCredentialStore {
 }
 
 struct KeychainSyncCredentials: SyncCredentialStore {
-    private let service = "com.qinyu.Diary.github-sync"
+    private let service: String
+    private let account: String
+    init(service: String = "com.qinyu.Diary.github-sync", account: String = "github-token") {
+        self.service = service; self.account = account
+    }
     private var query: [String: Any] {
         [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
-         kSecAttrAccount as String: "github-token"]
+         kSecAttrAccount as String: account]
     }
     func read() throws -> String? {
         var query = query

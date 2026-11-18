@@ -28,10 +28,7 @@ struct DiaryApp: App {
                 .environment(locationService)
                 .environment(sync)
                 .environment(nearby)
-                .onAppear { sync.start(store: store) }
-                .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-                    if sync.automaticSync { Task { await sync.syncNow(store: store) } }
-                }
+                .onAppear { sync.start(store: store); nearby.resumeBackground(store: store) }
                 .frame(minWidth: 860, minHeight: 560)
         }
         .defaultSize(width: 1040, height: 700)

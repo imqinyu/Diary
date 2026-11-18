@@ -66,7 +66,7 @@ struct DiaryEntry: Identifiable, Hashable {
     var excerpt: String
     var fileURL: URL
     var bodyMarkdown: String
-    /// 手动插入的旧日记有半天补写期；普通条目为 nil。存在文件里，别的平台也能照着办。
+    /// 普通日记从创建起可写 24 小时；补写可写 12 小时。绝对期限跨平台共用。
     var editableUntil: Date? = nil
     /// 正文是否以密文保存（只有私密条目会）。
     var isEncrypted: Bool = false
@@ -75,13 +75,13 @@ struct DiaryEntry: Identifiable, Hashable {
     var encryptionSalt: String? = nil
     var isContentAvailable = true
 
-    /// 普通条目只有当天可写；插入的旧日记在半天的补写期内可写，过期自动只读。
+    /// 没有显式期限的旧普通日记也按创建后 24 小时计算。
     func canEdit(at date: Date) -> Bool {
         guard !isDeleted, isContentAvailable else { return false }
         if let editableUntil {
             return date < editableUntil
         }
-        return dayKey == DayKey.today()
+        return date < created.addingTimeInterval(24 * 60 * 60)
     }
 
     var isWritable: Bool {
@@ -157,7 +157,7 @@ extension DiaryEntry {
         let editedLater = DayKey.date(from: dayKey).map {
             Calendar.current.compare(writingDate, to: $0, toGranularity: .day) == .orderedDescending
         } ?? false
-        if isDeleted, let recorded = fm.bool("backfilled") {
+        if let recorded = fm.bool("backfilled") {
             self.isBackfilled = recorded
         } else {
             self.isBackfilled = fm.bool("backfilled") == true || editableUntil != nil || editedLater

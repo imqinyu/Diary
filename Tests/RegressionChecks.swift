@@ -124,6 +124,22 @@ struct RegressionChecks {
     }
 
     static func checkBackfillAndDeletion() {
+        let created = ISO8601.date("2026-11-18T23:59:00+08:00")!
+        var ordinary = FrontMatter()
+        ordinary.set("date", .scalar("2026-11-18"))
+        ordinary.set("created", .scalar(ISO8601.string(created)))
+        ordinary.set("updated", .scalar(ISO8601.string(created.addingTimeInterval(120))))
+        ordinary.set("backfilled", .scalar("false"))
+        ordinary.set("editable_until", .scalar(ISO8601.string(created.addingTimeInterval(86400))))
+        let midnightEntry = DiaryEntry(document: EntryDocument(frontMatter: ordinary, body: "跨午夜继续写"), fileURL: URL(fileURLWithPath: "/tmp/2026-11-18-1.md"))!
+        precondition(midnightEntry.canEdit(at: created.addingTimeInterval(86399)))
+        precondition(!midnightEntry.canEdit(at: created.addingTimeInterval(86400)))
+        precondition(!midnightEntry.isBackfilled)
+        precondition(!DiaryEntry(document: midnightEntry.makeDocument(), fileURL: midnightEntry.fileURL)!.isBackfilled)
+        ordinary.set("editable_until", nil)
+        let legacy = DiaryEntry(document: EntryDocument(frontMatter: ordinary, body: "旧格式"), fileURL: midnightEntry.fileURL)!
+        precondition(legacy.canEdit(at: created.addingTimeInterval(120)))
+        precondition(!legacy.canEdit(at: created.addingTimeInterval(86400)))
         let day = "2024-06-10"
         let originalDate = DayKey.date(from: day)!
         let laterDate = DayKey.date(from: "2026-11-16")!

@@ -24,6 +24,12 @@ struct NearbyChecks {
         precondition(key.withUnsafeBytes { Data($0) } == reverse.withUnsafeBytes { Data($0) })
         let plain = Data("附近同步 · Android ↔ macOS".utf8), nonce = Data((0..<12).map(UInt8.init))
         let box = try NearbyCrypto.seal(plain, key: key, context: "network", nonce: nonce)
+        let signing = try P256.Signing.PrivateKey(rawRepresentation: macRaw)
+        let challenge = NearbyCrypto.identityChallenge(receiver: "receiver", sender: "sender", publicKey: "ephemeral", salt: "salt", senderKey: "senderKey")
+        let signature = try signing.signature(for: challenge).derRepresentation.base64EncodedString()
+        check(NearbyCrypto.verify(identity: signing.publicKey.x963Representation.base64EncodedString(), signature: signature, data: challenge))
+        check(!NearbyCrypto.verify(identity: signing.publicKey.x963Representation.base64EncodedString(), signature: signature,
+            data: NearbyCrypto.identityChallenge(receiver: "receiver", sender: "sender", publicKey: "ephemeral", salt: "salt", senderKey: "changed")))
         check(try NearbyCrypto.open(box, key: reverse, context: "network") == plain )
         do { _ = try NearbyCrypto.open(box, key: key, context: "other"); fatalError("AAD accepted") } catch {}
         var damaged = box; damaged[damaged.count - 1] ^= 1
@@ -31,7 +37,9 @@ struct NearbyChecks {
         return ["macPrivate": macRaw.base64EncodedString(), "androidPrivate": androidRaw.base64EncodedString(),
                 "macPublic": mac.publicKey.x963Representation.base64EncodedString(), "androidPublic": android.publicKey.x963Representation.base64EncodedString(),
                 "salt": salt.base64EncodedString(), "key": key.withUnsafeBytes { Data($0) }.base64EncodedString(),
-                "code": NearbyCrypto.code(key), "nonce": nonce.base64EncodedString(), "plain": plain.base64EncodedString(), "box": box.base64EncodedString()]
+                "code": NearbyCrypto.code(key), "nonce": nonce.base64EncodedString(), "plain": plain.base64EncodedString(), "box": box.base64EncodedString(),
+                "signingIdentity": signing.publicKey.x963Representation.base64EncodedString(), "signature": signature, "challenge": challenge.base64EncodedString(),
+                "identityCode": NearbyCrypto.pairCode(key, first: signing.publicKey.x963Representation.base64EncodedString(), second: android.publicKey.x963Representation.base64EncodedString())]
     }
     static func write(_ root: URL, _ path: String, _ data: Data) throws {
         let file = root.appendingPathComponent(path)

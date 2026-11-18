@@ -14,6 +14,23 @@ final class NearbyManager: NSObject, @preconcurrency CBPeripheralManagerDelegate
     private(set) var pairingCode: String?
     private(set) var conflicts: [NearbyConflict] = []
     private(set) var lastSyncDate: String?
+    var backgroundEnabled = UserDefaults.standard.bool(forKey: "NearbyBackground") {
+        didSet {
+            UserDefaults.standard.set(backgroundEnabled, forKey: "NearbyBackground")
+            if backgroundEnabled, let store { start(store: store) }
+            else if !backgroundEnabled { stop() }
+        }
+    }
+    private(set) var trustedDevices: [NearbyTrustedDevice] = (UserDefaults.standard.data(forKey: "NearbyTrustedDevices").flatMap { try? JSONDecoder().decode([NearbyTrustedDevice].self, from: $0) }) ?? []
+    @ObservationIgnored private var signing: NearbySigningIdentity?
+    @ObservationIgnored private var identityTask: Task<Void, Never>?
+    @ObservationIgnored private var allowTrust = false
+    func forget(_ id: String) {
+        trustedDevices.removeAll { $0.id == id }; saveTrusted()
+    }
+    private func saveTrusted() { UserDefaults.standard.set(try? JSONEncoder().encode(trustedDevices), forKey: "NearbyTrustedDevices") }
+    func resumeBackground(store: DiaryStore) { self.store = store; if backgroundEnabled { start(store: store) } }
+
     @ObservationIgnored private var peripheral: CBPeripheralManager?
     @ObservationIgnored private var characteristic: CBMutableCharacteristic?
     @ObservationIgnored private var location: CLLocationManager?
@@ -49,13 +66,21 @@ final class NearbyManager: NSObject, @preconcurrency CBPeripheralManagerDelegate
             if let state = try? space?.load() { conflicts = state.conflicts.filter { state.resolutions[$0.path] == nil }; lastSyncDate = state.lastSyncDate }
         }
         isWaiting = true; status = "正在准备蓝牙发现…"
-        if peripheral == nil { peripheral = CBPeripheralManager(delegate: self, queue: .main) }
-        else if peripheral?.state == .poweredOn { configureService() }
-        else { peripheralManagerDidUpdateState(peripheral!) }
+        let run = generation
+        identityTask = Task {
+            do {
+                let identity = try await nearbyIO { try NearbySigningIdentity.load() }
+                guard isWaiting, generation == run else { return }
+                signing = identity
+                if peripheral == nil { peripheral = CBPeripheralManager(delegate: self, queue: .main) }
+                else if peripheral?.state == .poweredOn { configureService() }
+                else { peripheralManagerDidUpdateState(peripheral!) }
+            } catch { isWaiting = false; status = error.localizedDescription }
+        }
     }
     func stop() {
         peripheral?.stopAdvertising(); peripheral?.removeAllServices()
-        task?.cancel(); wire?.close()
+        identityTask?.cancel(); task?.cancel(); wire?.close()
         isWaiting = false; pairingCode = nil; waitingLocation = false
         if task == nil { isBusy = false; network = nil; sessionKey = nil }
         status = "附近同步已取消。"
@@ -83,10 +108,13 @@ final class NearbyManager: NSObject, @preconcurrency CBPeripheralManagerDelegate
         else { status = "已开启附近发现，请在安卓日记中扫描这台 Mac。" }
     }
     func peripheralManager(_ manager: CBPeripheralManager, didReceiveRead request: CBATTRequest) {
-        guard isWaiting, request.characteristic.uuid == characteristicID, let privateKey else { manager.respond(to: request, withResult: .readNotPermitted); return }
+        guard isWaiting, request.characteristic.uuid == characteristicID, let privateKey, let signing else { manager.respond(to: request, withResult: .readNotPermitted); return }
         do {
             let value = try JSONSerialization.data(withJSONObject: ["v": 1, "peerId": localId,
-                "publicKey": privateKey.publicKey.x963Representation.base64EncodedString(), "salt": salt.base64EncodedString()])
+                "publicKey": privateKey.publicKey.x963Representation.base64EncodedString(), "salt": salt.base64EncodedString(),
+                "platform": "mac", "name": Host.current().localizedName ?? "Mac", "identity": signing.publicKey,
+                "signature": try signing.key.signature(for: NearbyCrypto.identityChallenge(receiver: localId, sender: "",
+                    publicKey: privateKey.publicKey.x963Representation.base64EncodedString(), salt: salt.base64EncodedString())).derRepresentation.base64EncodedString()])
             guard request.offset <= value.count else { manager.respond(to: request, withResult: .invalidOffset); return }
             request.value = value.subdata(in: request.offset..<value.count)
             manager.respond(to: request, withResult: .success)
@@ -115,10 +143,23 @@ final class NearbyManager: NSObject, @preconcurrency CBPeripheralManagerDelegate
                           let password = config["password"] as? String, (8...63).contains(password.utf8.count),
                           let host = config["host"] as? String, host.count <= 15,
                           let port = config["port"] as? Int, (1...65535).contains(port) else { throw NearbyError.message("安卓临时网络信息无效") }
-                    network = config; sessionKey = key; pairingCode = NearbyCrypto.code(key)
+                    let identity = config["identity"] as? String
+                    if let identity {
+                        guard let signature = config["signature"] as? String,
+                              NearbyCrypto.verify(identity: identity, signature: signature,
+                                data: NearbyCrypto.identityChallenge(receiver: localId, sender: id,
+                                    publicKey: privateKey.publicKey.x963Representation.base64EncodedString(), salt: salt.base64EncodedString(), senderKey: packet.prefix(65).base64EncodedString())) else {
+                            throw NearbyError.message("设备身份签名无效，请重新配对")
+                        }
+                    }
+                    let trusted = identity != nil && trustedDevices.contains { $0.id == id && $0.identity == identity }
+                    if config["automatic"] as? Bool == true && (!backgroundEnabled || !trusted) { throw NearbyError.message("没有授权此设备自动同步") }
+                    allowTrust = trusted
+                    network = config; sessionKey = key; pairingCode = trusted ? nil : NearbyCrypto.pairCode(key, first: identity, second: identity == nil ? nil : signing?.publicKey)
                     isWaiting = false; isBusy = true; manager.stopAdvertising()
                     status = "请核对两端配对码，确认是你的安卓设备。"
                     packet = Data(); packetCentral = nil
+                    if trusted { Task { self.confirm(remember: true) } }
                 }
                 manager.respond(to: request, withResult: .success)
             } catch {
@@ -128,7 +169,8 @@ final class NearbyManager: NSObject, @preconcurrency CBPeripheralManagerDelegate
             }
         }
     }
-    func confirm() {
+    func confirm(remember: Bool = false) {
+        allowTrust = remember
         guard network != nil, sessionKey != nil else { return }
         pairingCode = nil
         if location == nil { location = CLLocationManager(); location?.delegate = self }
@@ -178,7 +220,10 @@ final class NearbyManager: NSObject, @preconcurrency CBPeripheralManagerDelegate
                 try Task.checkCancellation()
                 status = "正在核对日记与图片变更…"
                 let ownId = localId
-                let prepared = try await nearbyIO { try NearbyTransfer.prepare(wire: wire, local: local, space: space, peerId: ownId) }
+                let ownIdentity = signing?.publicKey
+                let peerIdentity = config["identity"] as? String
+                let trustConsent = allowTrust
+                let prepared = try await nearbyIO { try NearbyTransfer.prepare(wire: wire, local: local, space: space, peerId: ownId, identity: ownIdentity, expectedIdentity: peerIdentity, allowTrust: trustConsent) }
                 try Task.checkCancellation()
                 if !prepared.conflicts.isEmpty {
                     conflicts = prepared.conflicts; status = "有 \(conflicts.count) 个冲突，请选择保留版本后重新同步。"
@@ -198,6 +243,11 @@ final class NearbyManager: NSObject, @preconcurrency CBPeripheralManagerDelegate
                 store.reloadFromSync(); store.onDiskChange?()
                 _ = try await nearbyIO { try wire.request("done") }
                 space.prune(next)
+                if trustConsent, prepared.peerTrust, let peerIdentity {
+                    trustedDevices.removeAll { $0.id == peer }
+                    trustedDevices.append(NearbyTrustedDevice(id: peer, name: String((config["name"] as? String ?? "安卓").prefix(80)), identity: peerIdentity))
+                    saveTrusted()
+                }
                 conflicts = []; lastSyncDate = next.lastSyncDate; status = "已完成附近同步。"
             } catch is NearbyConflictPause { /* Conflict choices are shown above. */ }
             catch is CancellationError { status = "附近同步已取消。" }
@@ -207,6 +257,10 @@ final class NearbyManager: NSObject, @preconcurrency CBPeripheralManagerDelegate
             await Task.detached { Self.releaseNetwork(ssid) }.value
             task = nil
             if generation == run { isBusy = false; network = nil; sessionKey = nil }
+            if backgroundEnabled && generation == run {
+                try? await Task.sleep(for: .seconds(2))
+                if backgroundEnabled { start(store: store) }
+            }
         }
     }
     nonisolated private static func joinNetwork(ssid: String, password: String, host: String) throws -> String {
